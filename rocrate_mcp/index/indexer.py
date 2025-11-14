@@ -35,6 +35,15 @@ class Indexer:
                         obj = json.loads(data)
                     except Exception:
                         return None
+                    # compute (mock) embedding for now — replace with pluggable provider later
+                    def compute_embedding(text: str) -> list[float]:
+                        # deterministic simple hash-based mock embedding for tests
+                        h = sum(ord(c) for c in text) % 100
+                        return [float((h + i) % 10) / 10.0 for i in range(8)]
+
+                    title = obj.get("name") or obj.get("label") or ""
+                    combined_text = title if isinstance(title, str) else (title[0] if title else "")
+
                     entry = IndexEntry(
                         crate_id=obj.get("@id") or res.locator,
                         resource_locator=res.locator,
@@ -43,10 +52,12 @@ class Indexer:
                         metadata_path="ro-crate-metadata.jsonld",
                         top_level_metadata=obj,
                         extracted_fields={
-                            "title": obj.get("name") or obj.get("label"),
+                            "title": title,
                         },
+                        embedding=compute_embedding(combined_text),
                         indexed_at=datetime.utcnow(),
                     )
+
                     return entry
 
                 entry = await loop.run_in_executor(None, read_and_parse)

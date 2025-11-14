@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
-from typing import Optional, Any, Dict, Literal
+from typing import Optional, Any, Dict, Literal, List
 from datetime import datetime
 
 
@@ -17,6 +17,7 @@ class IndexEntry(BaseModel):
     storage_backend_id: Optional[str] = None
     indexed_at: datetime
     validation_status: Literal["unknown", "valid", "invalid"] = "unknown"
+    embedding: Optional[List[float]] = None  # dense vector for semantic search
 
 
 class StorageBackendConfig(BaseModel):
