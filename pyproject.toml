@@ -1,0 +1,40 @@
+[project]
+name = "rocrate-mcp"
+version = "0.1.0"
+description = "MCP server for RO-crates"
+authors = [{ name = "Jente Houweling", email = "Jente.Houweling@rivm.nl" }, {name = "Matthias Arras", email= "Matthias.Arras@gmail.com"}]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+ dependencies = [
+     "ro-crate-py>=0.9.0",
+     "fastapi>=0.110.0",
+     "uvicorn>=0.29.0",
+     "azure-storage-blob>=12.14.0",
+     "python-dotenv>=1.0.0",
+ ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+    "pytest-asyncio",
+    "tox",
+    "ruff",          # fast linter/formatter
+    "mypy",          # type checks
+]
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+addopts = "-v --cov=rocrate_mcp --cov-report=term-missing"
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
