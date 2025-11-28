@@ -5,7 +5,7 @@ from datetime import datetime
 
 import numpy as np
 
-from rocrate_mcp.index.store import IndexStore
+from rocrate_mcp.index.storage.store import IndexStore
 from rocrate_mcp.models import IndexEntry
 
 
@@ -27,7 +27,7 @@ def test_semantic_search_basic():
         entry = IndexEntry(
             crate_id=id_,
             resource_locator=f"{id_}.zip",
-            metadata_path="ro-crate-metadata.jsonld",
+            metadata_path="ro-crate-metadata.json",
             top_level_metadata={"name": name},
             extracted_fields={"title": name},
             indexed_at=datetime.utcnow(),

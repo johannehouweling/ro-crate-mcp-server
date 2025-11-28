@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import threading
-from typing import Dict, Iterable, List, Optional
+from collections.abc import Iterable
 
 import numpy as np
 
-from ..models import IndexEntry, SearchFilter
+from ...models import IndexEntry, SearchFilter
 
 
 class IndexStore:
     def __init__(self):
         self._lock = threading.RLock()
-        self._by_id: Dict[str, IndexEntry] = {}
+        self._by_id: dict[str, IndexEntry] = {}
 
     def insert(self, entry: IndexEntry) -> None:
         with self._lock:
@@ -22,13 +22,13 @@ class IndexStore:
             for e in entries:
                 self._by_id[e.crate_id] = e
 
-    def get(self, crate_id: str) -> Optional[IndexEntry]:
+    def get(self, crate_id: str) -> IndexEntry|None:
         return self._by_id.get(crate_id)
 
-    def search(self, filter: SearchFilter, mode: str = "keyword") -> List[IndexEntry]:
+    def search(self, filter: SearchFilter, mode: str = "keyword") -> list[IndexEntry]:
         # naive search: full-text over extracted_fields values and simple field_filters exact match
         q = (filter.q or "").lower()
-        results: List[IndexEntry] = []
+        results: list[IndexEntry] = []
         for e in self._by_id.values():
             match = True
             if filter.field_filters:

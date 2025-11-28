@@ -3,7 +3,7 @@ MCP server for RO-crates
 
 Overview
 --------
-This project implements a small MCP (Model Context Protocol) server that indexes RO-Crate zip archives by reading the embedded JSON-LD metadata file (typically named `ro-crate-metadata.jsonld` or `ro-crate.json`) without unpacking the entire archive. The server exposes a FastAPI-based HTTP API to list, search, and fetch crate metadata.
+This project implements a small MCP (Model Context Protocol) server that indexes RO-Crate zip archives by reading the embedded JSON-LD metadata file (typically named `ro-crate-metadata.json` or `ro-crate.json`) without unpacking the entire archive. The server exposes a FastAPI-based HTTP API to list, search, and fetch crate metadata.
 
 Quickstart
 ----------

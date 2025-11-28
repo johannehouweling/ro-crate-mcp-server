@@ -3,8 +3,8 @@ import io
 import json
 import pytest
 from rocrate_mcp.index.indexer import Indexer
-from rocrate_mcp.index.store import IndexStore
-from rocrate_mcp.storage.base import ResourceInfo, StorageBackend
+from rocrate_mcp.index.storage.store import IndexStore
+from rocrate_mcp.rocrate_storage.base import ResourceInfo, StorageBackend
 
 
 class DummyBackend(StorageBackend):

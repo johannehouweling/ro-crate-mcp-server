@@ -1,0 +1,507 @@
+{
+  "@context": [
+    "https://w3id.org/ro/crate/1.1/context",
+    {
+      "@vocab": "http://schema.org/",
+      "DOI": "https://w3id.org/ldac/terms#doi",
+      "Organism": "http://www.bioassayontology.org/bao#BAO_0000551",
+      "Organ": "http://purl.obolibrary.org/obo/UBERON_0000062",
+      "Tissue": "http://purl.obolibrary.org/obo/UBERON_0000479",
+      "biosample": "https://bioschemas.org/BioSample",
+      "supplier": "http://ncicb.nci.nih.gov/xml/owl/EVS/Thesaurus.owl#C43530",
+      "species": "http://schema.org/species",
+      "Chemical": "https://bioschemas.org/ChemicalSubstance",
+      "chemicalcomposition": "http://bioschemas.org/chemicalComposition",
+      "AdverseOutcomePathway": "http://purl.bioontology.org/ontology/MESH/D000073931",
+      "AopEvent": "https://w3id.org/tox/terms#aopEvent",
+      "AOPEvent": "http://aopkb.org/aop_ontology#AopEntity",
+      "dataLevel": "https://w3id.org/tox/terms#dataLevel"
+    }
+  ],
+  "@graph": [
+    {
+      "@id": "./",
+      "@type": [
+        "Dataset",
+        "Assay"
+      ],
+      "conformsTo": [
+        {
+          "@id": "https://w3id.org/tox/profile#CellBasedToxicology"
+        },
+        {
+          "@id": "https://w3id.org/ldac/profile#Collection"
+        }
+      ],
+      "additionalType": [],
+      "name": [
+        "Inhibition of MCT8-mediated cellular uptake of triiodothyronine in an overexpressing cell model"
+      ],
+      "description": [
+        "A cell based in vitro assay to screen chemicals for their capacity to inhibit triiodothyronine (T3) uptake by human monocarboxylate 8 (MCT8) using an overexpressing cell model. he monocarboxylate 8 (MCT8, expressed by the SLC16A2 gene) is a transmembrane protein that is important for cellular uptake of triiodothyronine (T3) in the brain. It facilitates the transport of T3 across the cell membrane endothelial cells in syncytiotrophoblasts and cytotrophoblasts cells in the placenta, in endothelial cell in the blood-brain-barrier (BBB), and in choroid plexus epithelial cells in the blood-cerebrospinal fluid-barrier (BCSFB). As such, MCT8 plays a crucial role in the transport of maternal TH across three barriers (placenta, BBB, BCSFB) to the developing fetal brain. Disruption of MCT8 mediated T3 transport across the barriers might cause TH deficiency in the brain, which can lead to severe adverse neurodevelopmental effects. The importance of MCT8 for TH supply to the brain is elucidated by patients carrying mutations in the MCT8 encoding gene SLC16A2, leading to a severe neurodevelopment disorder called the Allan-Herndon-Dudley syndrome (AHDS). Certain chemicals can interfere with the transport of T3 into cells by inhibition of MCT8. The disruption of the MCT8 facilitated thyroid hormone transmembrane transport is regarded as a possible mechanism for thyroid hormone system disruption by chemicals."
+      ],
+      "datePublished": [
+        "2025-11-11"
+      ],
+      "license": [
+        "https://creativecommons.org/publicdomain/zero/1.0/legalcode"
+      ],
+      "DOI": [
+        "https://doi.org/10.1016/j.tiv.2023.105770"
+      ],
+      "author": [
+        {
+          "@id": "https://orcid.org/0000-0003-4766-7358"
+        },
+        {
+          "@id": "https://orcid.org/0000-0002-5733-3290"
+        },
+        {
+          "@id": "https://orcid.org/0000-0002-9569-7562"
+        }
+      ],
+      "funder": [
+        {
+          "@id": "https://ror.org/00k4n6c32"
+        }
+      ],
+      "Organism": [
+        "Canis lupus familiaris",
+        "Homo sapiens"
+      ],
+      "Organ": [
+        "Kidney"
+      ],
+      "Tissue": [
+        "Kidney epithelial cell"
+      ],
+      "biosample": [
+        {
+          "@id": "https://www.cellosaurus.org/CVCL_0592"
+        }
+      ],
+      "Chemical": [
+        {
+          "@id": "https://pubchem.ncbi.nlm.nih.gov/compound/441764"
+        }
+      ],
+      "AdverseOutcomePathway": [],
+      "http://aopkb.org/aop_ontology#AopEntity": [
+        {
+          "@id": "https://aopwiki.org/events/2258"
+        }
+      ],
+      "hasPart": [
+        {
+          "@id": "Study wide processed data/Data for statistical analysis/[TARA] Nonlinear increasing equations.pzf"
+        },
+        {
+          "@id": "Study wide processed data/Data for statistical analysis/MCT8-MDCK Update.pzf"
+        },
+        {
+          "@id": "Study wide processed data/Data for statistical analysis/[TARA] Nonlinear decreasing equations.pzf"
+        },
+        {
+          "@id": "Study wide processed data/Data for statistical analysis/Krebs et al (2018) - Normalization of Data for Viability and Relative Cell Function Curves (ALTEX).pdf"
+        },
+        {
+          "@id": "Study wide processed data/All compounds including best-fit (cytotox).pzf"
+        },
+        {
+          "@id": "Study wide processed data/All compounds including best-fit (Assay).pzf"
+        },
+        {
+          "@id": "Raw data + individual processed data/220511_SK_MCT8_MDCK1_P1_Silychristin+Verapamil/220511_SK_MCT8_MDCK1_P1_Silychristin+Verapamil.xls"
+        },
+        {
+          "@id": "Raw data + individual processed data/220511_SK_MCT8_MDCK1_P1_Silychristin+Verapamil/220511_SK_MCT8_MDCK1_P1_Silychristin+Verapamil.prism"
+        },
+        {
+          "@id": "Raw data + individual processed data/220517_SK_MCT8_MDCK1_P2_Silychristin+Verapamil/220517_SK_MCT8_MDCK1_P2_Silychristin+Verapamil.xls"
+        },
+        {
+          "@id": "Raw data + individual processed data/220517_SK_MCT8_MDCK1_P2_Silychristin+Verapamil/220517_SK_MCT8_MDCK1_P2_Silychristin+Verapamil.prism"
+        },
+        {
+          "@id": "Raw data + individual processed data/220330_SK_MCT8_MDCK1_P2_Silychristin+Verapamil/220330_SK_MCT8_MDCK1_P2_Silychristin+Verapamil.prism"
+        },
+        {
+          "@id": "Raw data + individual processed data/220330_SK_MCT8_MDCK1_P2_Silychristin+Verapamil/220330_SK_MCT8_MDCK1_P2_Silychristin+Verapamil.xls"
+        },
+        {
+          "@id": "Assay-metadata-MCT8-MDCK1-v1.1.xlsx"
+        },
+        {
+          "@id": "ro-crate-preview.html"
+        },
+        {
+          "@id": "S-VHPS21.json"
+        },
+        {
+          "@id": "README.txt"
+        }
+      ],
+      "dateModified": [
+        "2025-11-10"
+      ],
+      "version": [
+        "1.0"
+      ],
+      "URL": [
+        ""
+      ],
+      "http://schema.org/url": [
+        "https://www.ebi.ac.uk/biostudies/vhp4safety/studies/S-VHPS21"
+      ],
+      "affiliation": [
+        {
+          "@id": "https://ror.org/04pp8hn57"
+        }
+      ],
+      "citation": [
+        {
+          "@id": "https://doi.org/10.1016/j.tiv.2023.105770"
+        }
+      ]
+    },
+    {
+      "@id": "https://orcid.org/0000-0003-4766-7358",
+      "name": "F.M.A. Wagenaars",
+      "givenName": "F.M.A.",
+      "familyName": "Wagenaars",
+      "affiliation": [
+        "Utrecht University"
+      ],
+      "@type": "Person"
+    },
+    {
+      "@id": "https://orcid.org/0000-0002-5733-3290",
+      "name": "Timo Hamers",
+      "givenName": "Timo",
+      "familyName": "Hamers",
+      "affiliation": [
+        "Vrije Universiteit Amsterdam"
+      ],
+      "@type": "Person"
+    },
+    {
+      "@id": "https://orcid.org/0000-0002-9569-7562",
+      "name": "Martin Scholze",
+      "givenName": "Martin",
+      "familyName": "Scholze",
+      "@type": "Person"
+    },
+    {
+      "@id": "https://ror.org/00k4n6c32",
+      "@type": "Organization",
+      "name": "European Commission"
+    },
+    {
+      "@id": "https://www.cellosaurus.org/CVCL_0592",
+      "name": "MDCK-I",
+      "accession": "CVCL_0592",
+      "species": [
+        "Canis lupus familiaris (Dog)"
+      ],
+      "@type": "CellLine",
+      "category": [
+        ""
+      ]
+    },
+    {
+      "@id": "https://pubchem.ncbi.nlm.nih.gov/compound/441764",
+      "name": "Silychristin",
+      "synonym": [
+        "Silychristin",
+        "Silicristin",
+        "33889-69-9",
+        "Silicristina",
+        "Silicristine",
+        "Silicristinum",
+        "CHEBI:9143",
+        "LK279ER14X",
+        "DTXSID50187512",
+        "(2R,3R)-3,5,7-trihydroxy-2-[(2R,3S)-7-hydroxy-2-(4-hydroxy-3-methoxyphenyl)-3-(hydroxymethyl)-2,3-dihydro-1-benzofuran-5-yl]-2,3-dihydrochromen-4-one"
+      ],
+      "inchi": "InChI=1S/C25H22O10/c1-33-18-6-10(2-3-15(18)28)23-14(9-26)13-4-11(5-17(30)25(13)35-23)24-22(32)21(31)20-16(29)7-12(27)8-19(20)34-24/h2-8,14,22-24,26-30,32H,9H2,1H3/t14-,22+,23+,24-/m1/s1",
+      "inchikey": "BMLIIPOXVWESJG-LMBCONBSSA-N",
+      "@type": "ChemicalSubstance"
+    },
+    {
+      "@id": "https://aopwiki.org/events/2258",
+      "name": "Inhibition, monocarboxylate transporter 8 (MCT8)",
+      "short_name": "Inhibition, monocarboxylate transporter 8 (MCT8)",
+      "eventType": "Key Event",
+      "biologicalOrganization": "Molecular",
+      "identifier": "https://aopwiki.org/events/2258",
+      "url": "https://aopwiki.org/events/2258.json",
+      "@type": "AopEvent"
+    },
+    {
+      "@id": "Study wide processed data/Data for statistical analysis/[TARA] Nonlinear increasing equations.pzf",
+      "@type": "File",
+      "dataLevel": [
+        {
+          "@id": "http://purl.obolibrary.org/obo/OBI_0001466"
+        }
+      ],
+      "contentSize": [
+        ""
+      ],
+      "additionalType": [
+        {
+          "@id": "http://edamontology.org/data_1669"
+        }
+      ]
+    },
+    {
+      "@id": "Study wide processed data/Data for statistical analysis/MCT8-MDCK Update.pzf",
+      "@type": [
+        "File"
+      ],
+      "dataLevel": [
+        {
+          "@id": "http://purl.obolibrary.org/obo/OBI_0001466"
+        }
+      ],
+      "additionalType": [
+        {
+          "@id": "http://edamontology.org/data_1669"
+        }
+      ]
+    },
+    {
+      "@id": "Study wide processed data/Data for statistical analysis/[TARA] Nonlinear decreasing equations.pzf",
+      "@type": "File",
+      "dataLevel": [
+        {
+          "@id": "http://purl.obolibrary.org/obo/OBI_0001466"
+        }
+      ],
+      "additionalType": [
+        {
+          "@id": "http://edamontology.org/data_1669"
+        }
+      ]
+    },
+    {
+      "@id": "Study wide processed data/Data for statistical analysis/Krebs et al (2018) - Normalization of Data for Viability and Relative Cell Function Curves (ALTEX).pdf",
+      "@type": [
+        "File"
+      ],
+      "dataLevel": [
+        {
+          "@id": "http://purl.obolibrary.org/obo/OBI_0001466"
+        }
+      ],
+      "additionalType": [
+        {
+          "@id": "http://purl.obolibrary.org/obo/OBI_0001466"
+        }
+      ]
+    },
+    {
+      "@id": "Study wide processed data/All compounds including best-fit (cytotox).pzf",
+      "@type": "File",
+      "dataLevel": [
+        {
+          "@id": "http://purl.obolibrary.org/obo/OBI_0001466"
+        }
+      ],
+      "additionalType": [
+        {
+          "@id": "http://edamontology.org/data_1669"
+        }
+      ]
+    },
+    {
+      "@id": "Study wide processed data/All compounds including best-fit (Assay).pzf",
+      "@type": "File",
+      "dataLevel": [
+        {
+          "@id": "http://purl.obolibrary.org/obo/OBI_0001466"
+        }
+      ],
+      "additionalType": [
+        {
+          "@id": "http://edamontology.org/data_1669"
+        }
+      ]
+    },
+    {
+      "@id": "Raw data + individual processed data/220511_SK_MCT8_MDCK1_P1_Silychristin+Verapamil/220511_SK_MCT8_MDCK1_P1_Silychristin+Verapamil.xls",
+      "@type": "File",
+      "dataLevel": [
+        {
+          "@id": "http://edamontology.org/data_2044"
+        }
+      ],
+      "additionalType": [
+        {
+          "@id": "http://edamontology.org/data_1669"
+        }
+      ]
+    },
+    {
+      "@id": "Raw data + individual processed data/220511_SK_MCT8_MDCK1_P1_Silychristin+Verapamil/220511_SK_MCT8_MDCK1_P1_Silychristin+Verapamil.prism",
+      "@type": "File",
+      "dataLevel": [
+        {
+          "@id": "http://edamontology.org/data_1669"
+        }
+      ],
+      "additionalType": [
+        {
+          "@id": "http://edamontology.org/data_1669"
+        }
+      ]
+    },
+    {
+      "@id": "Raw data + individual processed data/220517_SK_MCT8_MDCK1_P2_Silychristin+Verapamil/220517_SK_MCT8_MDCK1_P2_Silychristin+Verapamil.xls",
+      "@type": "File",
+      "dataLevel": [
+        {
+          "@id": "http://edamontology.org/data_2044"
+        }
+      ],
+      "additionalType": [
+        {
+          "@id": "http://edamontology.org/data_2044"
+        }
+      ]
+    },
+    {
+      "@id": "Raw data + individual processed data/220517_SK_MCT8_MDCK1_P2_Silychristin+Verapamil/220517_SK_MCT8_MDCK1_P2_Silychristin+Verapamil.prism",
+      "@type": "File",
+      "additionalType": [
+        {
+          "@id": "http://edamontology.org/data_1669"
+        }
+      ]
+    },
+    {
+      "@id": "Raw data + individual processed data/220330_SK_MCT8_MDCK1_P2_Silychristin+Verapamil/220330_SK_MCT8_MDCK1_P2_Silychristin+Verapamil.prism",
+      "@type": "File",
+      "dataLevel": [
+        {
+          "@id": "http://edamontology.org/data_1669"
+        }
+      ],
+      "additionalType": [
+        {
+          "@id": "http://edamontology.org/data_2044"
+        }
+      ]
+    },
+    {
+      "@id": "Raw data + individual processed data/220330_SK_MCT8_MDCK1_P2_Silychristin+Verapamil/220330_SK_MCT8_MDCK1_P2_Silychristin+Verapamil.xls",
+      "@type": "File",
+      "dataLevel": [
+        {
+          "@id": "http://edamontology.org/data_2044"
+        }
+      ],
+      "additionalType": [
+        {
+          "@id": "http://edamontology.org/data_2044"
+        }
+      ]
+    },
+    {
+      "@id": "Assay-metadata-MCT8-MDCK1-v1.1.xlsx",
+      "@type": "File",
+      "dataLevel": [
+        {
+          "@id": "https://w3id.org/tox/terms#MetadataFile"
+        }
+      ],
+      "additionalType": [
+        {
+          "@id": "https://w3id.org/tox/terms#MetadataFile"
+        }
+      ]
+    },
+    {
+      "@id": "ro-crate-preview.html",
+      "@type": "File",
+      "dataLevel": [
+        {
+          "@id": "https://w3id.org/tox/terms#MetadataFile"
+        }
+      ]
+    },
+    {
+      "@id": "S-VHPS21.json",
+      "@type": "File",
+      "dataLevel": [
+        {
+          "@id": "https://w3id.org/tox/terms#MetadataFile"
+        }
+      ]
+    },
+    {
+      "@id": "README.txt",
+      "@type": [
+        "File",
+        ""
+      ],
+      "dataLevel": [
+        {
+          "@id": "https://w3id.org/tox/terms#MetadataFile"
+        }
+      ],
+      "encodingFormat": [
+        ""
+      ]
+    },
+    {
+      "@id": "ro-crate-metadata.json",
+      "@type": "CreativeWork",
+      "identifier": "ro-crate-metadata.json",
+      "about": {
+        "@id": "./"
+      }
+    },
+    {
+      "@id": "http://purl.obolibrary.org/obo/OBI_0001466",
+      "@type": "DefinedTerm",
+      "name": "Study aggregated processed data",
+      "description": "Study-wide aggregated or summarized processed data."
+    },
+    {
+      "@id": "http://edamontology.org/data_2044",
+      "@type": "DefinedTerm",
+      "name": "Raw experimental data",
+      "description": "Per-experiment raw measurements (e.g. instrument outputs)."
+    },
+    {
+      "@id": "http://edamontology.org/data_1669",
+      "@type": "DefinedTerm",
+      "name": "Processed data",
+      "description": "Per-experiment processed outputs (e.g. normalized values)."
+    },
+    {
+      "@id": "https://w3id.org/tox/terms#MetadataFile",
+      "@type": "DefinedTerm",
+      "name": "Metadata",
+      "description": "Assay metadata templates or descriptive files."
+    },
+    {
+      "@id": "https://ror.org/04pp8hn57",
+      "@type": "Organization",
+      "name": "Utrecht University"
+    },
+    {
+      "@id": "",
+      "@type": "ScholarlyArticle",
+      "name": "ScholarlyArticle-1"
+    },
+    {
+      "@id": "https://doi.org/10.1016/j.tiv.2023.105770",
+      "@type": "ScholarlyArticle",
+      "name": [
+        "Screening for endocrine disrupting chemicals inhibiting monocarboxylate 8 (MCT8) transporter facilitated thyroid hormone transport using a modified nonradioactive assay"
+      ]
+    }
+  ]
+}

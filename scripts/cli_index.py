@@ -5,8 +5,8 @@ import asyncio
 
 from rocrate_mcp.config import Settings
 from rocrate_mcp.index.indexer import Indexer
-from rocrate_mcp.index.store import IndexStore
-from rocrate_mcp.storage.azure_blob import AzureBlobStorageBackend
+from rocrate_mcp.index.storage.store import IndexStore
+from rocrate_mcp.rocrate_storage.azure_blob import AzureBlobStorageBackend
 
 
 async def main():
