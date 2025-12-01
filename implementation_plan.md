@@ -1,200 +1,165 @@
 # Implementation Plan
 
 [Overview]
-Create an MCP server that indexes RO-Crate zip files stored in Azure Blob Storage by reading the embedded RO-Crate JSON-LD (ro-crate-metadata.json / ro-crate.json) from each archive without unpacking entire archives, and exposes a FastAPI-based query API for listing, searching, and fetching crate JSON-LD.
+Single sentence describing the overall goal.
 
-The server will be written in Python (FastAPI) and will default to an eager indexing strategy that scans an Azure Blob container for RO-crates and reads the canonical JSON-LD file from each zip archive to build a complete index on startup (with a hybrid/incremental mode available). The implementation provides a pluggable storage-backend abstraction so other backends (S3, local FS, HTTP) can be added.
+Add MCP tools and small utilities to make the existing rocrate MCP server practical to use: provide robust indexed search (keyword + mock semantic), crate file listing, crate download, and entity-based search helpers so LLMs or other clients can discover, inspect, and fetch RO-Crate archives from configured storage backends.
 
-Key architectural decision (updated): a single-engine DuckDB-based index will be used for structured storage, lexical BM25-style full-text, and vector similarity search (VSS). This keeps a single on-disk DB file and allows both columnar analytics and integrated lexical+semantic search using DuckDB extensions (duck-fts and VSS). Embeddings are generated via a pluggable EmbeddingProvider (default: local sentence-transformers) with optional cloud providers supported.
+This change extends the current SqliteFTSIndexStore, Indexer, and StorageBackend implementations by exposing new FastMCP tools and zip-inspection utilities. The approach reuses existing code for indexing and storage, keeps semantic search as a deterministic/mock embedding provider (per user preference), and focuses on safety when reading zip contents and bounding downloads to avoid resource exhaustion. The implementation fits into the existing mcp tool model (no additional HTTP/FastAPI endpoints) and is backend-agnostic via the StorageBackend protocol.
 
 [Types]
-Define strict Pydantic models to represent index entries, storage identifiers, and search filters.
+Single sentence describing the type system changes.
 
-Detailed type definitions:
-- IndexEntry (pydantic.BaseModel)
-  - crate_id: str  # unique id derived primarily from crate metadata (preferred) or generated from the resource locator
-  - resource_locator: str  # opaque locator for the crate resource within the backend (e.g., blob name, s3 key, filesystem path, or URI)
-  - resource_size: Optional[int]  # size in bytes when available
-  - resource_last_modified: Optional[datetime]
-  - metadata_path: str  # path inside the crate where the JSON-LD was found (e.g., "ro-crate-metadata.json" or "ro-crate.json")
-  - top_level_metadata: dict[str, Any]  # top-level json-ld (subset or full)
-  - extracted_fields: dict[str, Any]  # searchable fields extracted (title, authors, keywords, description)
-  - checksum?: str  # optional content checksum
-  - version?: str  # optional
-  - storage_backend_id?: str  # optional identifier of the storage backend hosting the resource
-  - indexed_at: datetime  # index insertion time
-  - validation_status: Enum("unknown","valid","invalid")
+Detailed type definitions, interfaces, enums, or data structures with complete specifications. Include field names, types, validation rules, and relationships.
 
-Validation rules:
-- crate_id must be non-empty and unique within an index
-- resource_locator must be present and treated as an opaque identifier; do not encode backend-specific semantics into crate_id
-- top_level_metadata must at minimum contain an "@context" or "@type" when present
-- extracted_fields must include title if available; normalize author lists to arrays of names
+- FileInfo (Pydantic model; add to src/rocrate_mcp/models.py)
+  - path: str — path of the file inside the crate (posix style). Validation: non-empty, normalized (no leading ../)
+  - size: int | None — uncompressed size in bytes when available
+  - last_modified: datetime | None — last modification time when available
+  - compressed_size: int | None — compressed size in archive if available
 
-- StorageBackendConfig (TypedDict)
-  - backend_id: str  # unique identifier for this backend configuration
-  - type: Literal["azure_blob", "s3", "filesystem", "generic_http"]  # backend type
-  - config: dict[str, Any]  # backend-specific configuration (connection strings, buckets, prefixes); treated as opaque by the indexer
-  - root_prefix?: str  # optional root prefix/path inside the backend
+- CrateFilesResponse (ad-hoc response shape; can be returned as dict or Pydantic model)
+  - crate_id: str
+  - resource_locator: str
+  - files: list[FileInfo]
+  - count: int
 
-- SearchFilter (pydantic.BaseModel)
-  - q: Optional[str]  # full-text across indexed extracted_fields
-  - field_filters: Optional[dict[str, str]]  # exact or partial matches
-  - limit: int = 50
-  - offset: int = 0
-  - semantic: bool = False  # whether to use semantic vector search
-  - combine_with_bm25: bool = True  # if semantic, whether to combine BM25 scores with vector scores
+- CrateDownloadResponse (Pydantic model; add to src/rocrate_mcp/models.py)
+  - crate_id: str
+  - resource_locator: str
+  - content_base64: str — base64-encoded binary content of the crate (warning: memory use)
+  - size: int | None — number of bytes
+
+- SearchByEntityRequest (function params; reuse SearchFilter where sensible)
+  - type_name: str
+  - prop_path: str
+  - prop_value: str
+  - entry_field: str | None
+  - entry_value: str | None
+  - exact: bool = True
+
+Validation rules
+- FileInfo.path must be non-empty and should not contain path traversal components when returned to clients.
+- Downloads larger than configured limit (ROC_MCP_DOWNLOAD_SIZE_LIMIT_MB) should be rejected with a clean error message.
 
 [Files]
-All file paths are relative to the repository root c:/Users/ArrasM/ro-crate-mcp-server.
+Single sentence describing file modifications.
 
-Single sentence: Create a new Python package rocrate_mcp with modular subpackages for storage backends, indexing, API, models, and a DuckDB-based index store; add tests and configuration.
-
-Detailed breakdown (updated to reflect DuckDB-centric design):
-- New and existing files (create or update as needed)
-  - rocrate_mcp/__init__.py  # package init
-  - rocrate_mcp/main.py  # FastAPI app and application startup/shutdown
-  - rocrate_mcp/models.py  # Pydantic models (IndexEntry, SearchFilter, StorageBackendConfig)
-  - rocrate_mcp/storage/__init__.py
-  - rocrate_mcp/storage/base.py  # StorageBackend abstract base class and exceptions
-  - rocrate_mcp/storage/azure_blob.py  # AzureBlobStorageBackend implementation (uses azure-storage-blob)
-  - rocrate_mcp/index/__init__.py
-  - rocrate_mcp/index/indexer.py  # Indexer class: eager and hybrid modes, incremental updates
-  - rocrate_mcp/index/store.py  # DuckDB-based IndexStore (duck-fts for BM25, VSS for vectors) and in-memory cache layer
-  - rocrate_mcp/api/__init__.py
-  - rocrate_mcp/api/routes.py  # FastAPI routers: /health, /index, /crates, /search, /crate/{id}
-  - rocrate_mcp/utils/zip_reader.py  # read a single file from zip in stream (without unpacking whole archive)
-  - rocrate_mcp/utils/json.py  # helpers to extract canonical ro-crate JSON-LD path and normalize metadata
-  - rocrate_mcp/config.py  # settings (pydantic BaseSettings) including connection strings, indexing mode and embedding provider config
-  - rocrate_mcp/embeddings.py  # EmbeddingProvider interface and implementations
-  - tests/test_indexer.py
-  - tests/test_storage_mock.py
-  - tests/test_api.py
-  - scripts/cli_index.py  # optional CLI utility to run indexing separately
+Detailed breakdown:
+- New files to be created
+  - src/rocrate_mcp/utils/zip_utils.py — utilities to inspect and optionally read members from a zip stream without loading entire archive into memory; functions:
+    - list_files_from_zip_stream(stream: BinaryIO) -> list[dict]
+      - returns list of dicts like {"path": "...", "size": int|None, "compressed_size": int|None, "last_modified": str|None}
+    - read_member_from_zip_stream(stream: BinaryIO, member_path: str) -> bytes
+      - reads a single member's raw bytes into memory (used optionally for partial extraction)
+    - Implementation notes: reuse pattern from utils/zip_reader.py (write stream to temp file, open with zipfile.ZipFile), ensure safe member names and preserve posix-style paths. Leave temp dir for caller to clean or ensure deletion after reading.
 
 - Existing files to be modified
-  - pyproject.toml  # add dependencies: azure-storage-blob, duckdb, sentence-transformers, python-dotenv (optional), pytest extras if needed
-  - README.md  # add usage, configuration and API examples
+  - src/rocrate_mcp/models.py
+    - Add FileInfo and CrateDownloadResponse Pydantic models (with docstrings and type hints).
+  - src/rocrate_mcp/config.py
+    - Add integer setting: download_size_limit_mb: int = 50 (env var ROC_MCP_DOWNLOAD_SIZE_LIMIT_MB)
+  - src/rocrate_mcp/main.py
+    - Add MCP tools (mcp.tool() decorated functions):
+      - list_crate_files(crate_id: str, ctx: Context | None = None) -> dict
+      - download_crate(crate_id: str, ctx: Context | None = None) -> dict
+      - search_by_entity(type_name: str, prop_path: str, prop_value: str, entry_field: str | None = None, entry_value: str | None = None, exact: bool = True, limit: int = 50, offset: int = 0, ctx: Context | None = None) -> dict
+    - Improve validation and docstrings for existing tools search_index and get_crate.
 
 - Files to be deleted or moved
   - None
 
+- Configuration file updates
+  - src/rocrate_mcp/config.py: add download_size_limit_mb: int = 50, document env ROC_MCP_DOWNLOAD_SIZE_LIMIT_MB in Config or README.
+
 [Functions]
-Single sentence: Add functions for listing blobs, reading a single file from a zip blob, indexing a container, searching the DuckDB index (BM25 and VSS), and API handlers.
+Single sentence describing function modifications.
 
 Detailed breakdown:
 - New functions
-  - StorageBackend.list_blobs(prefix: Optional[str] = None) -> Iterator[BlobInfo]
-    - File: rocrate_mcp/storage/base.py
-    - Purpose: yield blob metadata (name, size, last_modified)
-  - AzureBlobStorageBackend.get_blob_stream(blob_name: str) -> BinaryIO
-    - File: rocrate_mcp/storage/azure_blob.py
-    - Purpose: return a streaming response or io.BytesIO-like stream for reading a blob
-  - utils.zip_reader.find_file_in_zip_stream(stream: BinaryIO, target_names: List[str]) -> bytes | None
-    - File: rocrate_mcp/utils/zip_reader.py
-    - Purpose: scan zip central directory in stream and extract specific file bytes without full extraction (use zipfile module with BytesIO but avoid saving to disk)
-  - index.indexer.Indexer.build_index(eager: bool = True) -> None
-    - File: rocrate_mcp/index/indexer.py
-    - Purpose: orchestrate listing blobs, reading ro-crate JSON-LD from each crate zip, generating embeddings (when enabled), and populating DuckDB IndexStore
-  - index.indexer.Indexer.refresh_incremental() -> None
-    - File: rocrate_mcp/index/indexer.py
-    - Purpose: check container changes by last_modified and update index incrementally
-  - index.store.IndexStore.search(filter: SearchFilter) -> List[IndexEntry]
-    - File: rocrate_mcp/index/store.py
-    - Purpose: run BM25 (duck-fts) and/or VSS searches inside DuckDB and merge/rerank results for hybrid search
-  - api.routes.search_crates(filter: SearchFilter) -> JSONResponse
-    - File: rocrate_mcp/api/routes.py
-    - Purpose: HTTP endpoint that returns paginated search results
-  - cli_index.main() -> None
-    - File: scripts/cli_index.py
-    - Purpose: run indexing as an ad-hoc command
+  - list_files_from_zip_stream(stream: BinaryIO) -> list[dict]
+    - file: src/rocrate_mcp/utils/zip_utils.py
+    - purpose: write the stream to a temp file, open with zipfile.ZipFile, gather file entries (path, size, compressed_size, mtime) while ensuring member names are safe.
+  - read_member_from_zip_stream(stream: BinaryIO, member_path: str) -> bytes
+    - file: src/rocrate_mcp/utils/zip_utils.py
+    - purpose: read and return the raw bytes for a specific member in the zip archive; raise FileNotFoundError if not present.
+
+  - mcp tool: list_crate_files(crate_id: str, ctx: Context|None = None) -> dict
+    - file: src/rocrate_mcp/main.py
+    - signature: async def list_crate_files(crate_id: str, ctx: Context | None = None) -> dict[str, Any]
+    - purpose: fetch index entry via mcp.state.store.get(crate_id); if not present return {"error": "not_found"} or empty dict; fetch binary stream via mcp.state.backend.get_resource_stream(entry.resource_locator); call list_files_from_zip_stream to get file listing; map to FileInfo model and return {"crate_id": ..., "resource_locator": ..., "count": N, "files": [...]}
+    - error handling: return user-friendly error dict on missing backend, missing resource, or extraction issue.
+
+  - mcp tool: download_crate(crate_id: str, ctx: Context|None = None) -> dict
+    - file: src/rocrate_mcp/main.py
+    - signature: async def download_crate(crate_id: str, ctx: Context | None = None) -> dict[str, Any]
+    - purpose: fetch index entry, call backend.get_resource_stream(locator) -> stream; determine size if possible (entry.resource_size or stream size); enforce settings.download_size_limit_mb; read bytes and return base64 encoded string and size.
+    - safety: if size unknown, read up to limit+1 bytes to decide whether to allow; if limit exceeded return informative error.
+
+  - mcp tool: search_by_entity(...)
+    - file: src/rocrate_mcp/main.py
+    - purpose: call store.find_crates_by_entity_property or find_crates_by_entity_and_entry depending on whether entry filters are provided; apply pagination and return list of crate metadata (crate_id, title, description, resource_locator).
 
 - Modified functions
-  - main.py app startup to call Indexer.build_index
+  - search_index (src/rocrate_mcp/main.py)
+    - tighten validation of field_filters (ensure dict[str,str] or return 400-like error), document behavior when FTS unavailable, keep mock semantic mode unchanged.
+  - get_crate (src/rocrate_mcp/main.py)
+    - ensure return shape stable: use entry.dict() but also ensure datetime values are isoformat strings and non-serializable values are converted.
+
+- Removed functions
+  - None
 
 [Classes]
-Single sentence: Introduce StorageBackend ABC, AzureBlobStorageBackend, Indexer, and DuckDB IndexStore classes to encapsulate core responsibilities.
+Single sentence describing class modifications.
 
 Detailed breakdown:
 - New classes
-  - StorageBackend (abc.ABC)
-    - File: rocrate_mcp/storage/base.py
-    - Key methods: list_blobs(prefix) -> Iterator[BlobInfo], get_blob_stream(blob_name) -> BinaryIO, get_blob_metadata(blob_name) -> BlobInfo
-    - Purpose: abstract storage operations
-  - AzureBlobStorageBackend(StorageBackend)
-    - File: rocrate_mcp/storage/azure_blob.py
-    - Key methods: implements list_blobs (uses ContainerClient.list_blobs), get_blob_stream (BlobClient.download_blob().readall or .chunks())
-    - Initialization: accepts connection_string, container, root_prefix
-  - Indexer
-    - File: rocrate_mcp/index/indexer.py
-    - Key methods: __init__(backend: StorageBackend, store: IndexStore, mode: Literal["eager","hybrid"]), build_index(), refresh_incremental(), get_crate(crate_id)
-    - Behavior: orchestrates bounded concurrency via asyncio.Semaphore, handles transient blob read errors, optionally validates JSON-LD with ro-crate-py, and generates embeddings via EmbeddingProvider when semantic search is enabled
-  - IndexStore (DuckDBIndexStore)
-    - File: rocrate_mcp/index/store.py
-    - Key methods: insert(entry: IndexEntry), bulk_insert(entries: Iterable[IndexEntry]), search(filter: SearchFilter) -> List[IndexEntry], get(crate_id) -> IndexEntry | None, persist() -> None, load() -> None
-    - Implementation: DuckDB table with duck-fts for full-text indexing and VSS vector support for embeddings. Embeddings stored as DuckDB vectors or arrays.
-  - EmbeddingProvider (protocol / ABC)
-    - File: rocrate_mcp/embeddings.py
-    - Key methods: embed_texts(texts: List[str]) -> np.ndarray
-    - Implementations: SentenceTransformersProvider (local) and OpenAIProvider (optional)
+  - FileInfo (Pydantic model) in src/rocrate_mcp/models.py
+  - CrateDownloadResponse (Pydantic model) in src/rocrate_mcp/models.py
 
 - Modified classes
-  - None existing
+  - Settings (src/rocrate_mcp/config.py): add property download_size_limit_mb: int
+
+- Removed classes
+  - None
 
 [Dependencies]
-Single sentence: Use DuckDB (with FTS and VSS), sentence-transformers (default embeddings), azure-storage-blob and optionally python-dotenv; keep ro-crate-py and FastAPI.
+Single sentence describing dependency modifications.
 
-Details:
-- New packages
-  - duckdb>=1.**  # ensure VSS and FTS extensions available
-  - sentence-transformers>=2.0.0  # default local embeddings
-  - azure-storage-blob>=12.14.0
-  - python-dotenv>=1.0 (optional, for local env loading)
-- Optional packages
-  - faiss-cpu (optional)  # only if FAISS sidecar is requested for very large vector collections
-  - openai (optional)  # to support OpenAI embeddings as a configurable provider
-- Existing packages to keep (from pyproject.toml)
-  - ro-crate-py>=0.9.0
-  - fastapi>=0.110.0
-  - uvicorn>=0.29.0
+Details of new packages, version changes, and integration requirements.
+- No new third-party packages required. Use Python stdlib modules (zipfile, tempfile, base64) and existing packages (pydantic, azure.storage.blob if Azure backend used).
+- If later upgrading to real embeddings, add optional dependency (e.g., openai) and configuration; not part of this plan.
 
 [Testing]
-Single sentence: Use pytest to cover storage backend (mocked), indexer logic, DuckDB IndexStore behavior (fts + vss), and API endpoints with an in-memory index.
+Single sentence describing testing approach.
 
-Test plan details (updated):
-- tests/test_storage_mock.py
-  - Mock AzureContainerClient and BlobClient behavior to simulate blob listings and streaming a small zip file containing ro-crate.json
-- tests/test_indexer.py
-  - Unit tests for Indexer.build_index with a mocked StorageBackend, asserting DuckDB IndexStore contents, embedding generation and error handling
-- tests/test_store_duckdb.py
-  - Tests that verify duck-fts queries, VSS nearest-neighbour results, hybrid ranking and limit/offset behavior
-- tests/test_api.py
-  - Use FastAPI TestClient to exercise /search and /crate/{id} endpoints against a populated DuckDB IndexStore
-- Validation strategies
-  - Fuzz invalid JSON-LD to ensure validation_status is set to invalid; ensure exceptions are captured and do not abort indexing
-  - Performance tests (manual): simple script that generates N small zip blobs and times indexing (documented in README)
+Test file requirements, existing test modifications, and validation strategies.
 
-[Implementation Order] (updated for DuckDB single-engine)
-Single sentence: Implement the storage abstraction, the Azure backend, the zip metadata reader, the DuckDB IndexStore (duck-fts + VSS), the EmbeddingProvider and Indexer, then the FastAPI API and tests in that order.
+- Add tests/test_zip_utils.py
+  - test_list_files_from_zip_stream: create temporary zip with known file paths and metadata, feed through a BytesIO stream or filesystem-backed stream (via FilesystemStorageBackend), assert returned file list contains expected paths and sizes.
+  - test_read_member_from_zip_stream: assert that reading a specific member returns expected bytes and that not-found raises FileNotFoundError.
 
-Numbered steps:
-1. Create package scaffolding and configuration (rocrate_mcp/, config.py, pyproject updates)
-2. Implement StorageBackend ABC and AzureBlobStorageBackend (list_blobs, get_blob_stream)
-3. Implement utils/zip_reader.py to extract ro-crate JSON-LD from a zip stream
-4. Implement models.py (IndexEntry, SearchFilter, StorageBackendConfig)
-5. Implement DuckDB IndexStore with duck-fts (BM25-like) and VSS (vector similarity search). Provide fallback brute-force vector similarity if VSS unavailable.
-6. Implement EmbeddingProvider interface and local SentenceTransformers provider (with optional OpenAI provider)
-7. Implement Indexer (eager build_index and refresh_incremental) and wire embedding generation into indexing flow (configurable)
-8. Wire FastAPI app in main.py and api/routes.py (health, /crates, /search, /crate/{id}) and ensure startup calls Indexer.build_index
-9. Add CLI script scripts/cli_index.py for manual reindexing
-10. Add tests for storage, indexer, DuckDB store, and API; update CI/test config in pyproject.toml
-11. Update README.md with configuration, usage, and scaling notes (DuckDB VSS vs brute-force, embedding provider options)
+- Extend tests/test_mcp_tools.py
+  - test_list_crate_files_tool: insert or index a sample crate into the SqliteFTSIndexStore (or stub store.get to return IndexEntry with resource_locator pointing to a temp zip), call list_crate_files tool function directly, assert correct response structure.
+  - test_download_crate_tool: similar to above, call download_crate and assert base64-decoded data matches original zip bytes; test limit enforcement by setting a low ROC_MCP_DOWNLOAD_SIZE_LIMIT_MB.
+  - test_search_by_entity_tool: create entries with materialized entities and assert search_by_entity returns expected crate_ids.
 
-[Notes and operational guidance]
-- Single-file deployment: default to keeping duckdb file (duckdb_index.db) in the configured index directory for persistence and portability.
-- Fallbacks: detect DuckDB VSS/FTS availability at runtime and fall back to brute-force vector computation or in-process token matching if extensions are unavailable. Log prominent warnings during startup.
-- Embeddings: default to a small sentence-transformers model to avoid requiring cloud credentials; document how to switch to OpenAI in config.py and README.
-- Rebuild strategy: provide a CLI command to rebuild the DuckDB index from the storage backend; Indexer should be idempotent and able to reconcile on startup.
+- Use pytest fixtures from tests/conftest.py where available (temporary DB, FilesystemStorageBackend). Tests should be deterministic and avoid network access.
 
-[Next actions]
-- Update repository files (pyproject.toml, README.md) and implement DuckDB IndexStore, EmbeddingProvider, and updated Indexer. Add tests for DuckDB FTS/VSS behavior.
+[Implementation Order]
+Single sentence describing the implementation sequence.
+
+Numbered steps showing the logical order of changes to minimize conflicts and ensure successful integration.
+
+1. Add configuration option: add download_size_limit_mb: int = 50 to src/rocrate_mcp/config.py and document ROC_MCP_DOWNLOAD_SIZE_LIMIT_MB in README.  
+2. Create utilities module: add src/rocrate_mcp/utils/zip_utils.py implementing list_files_from_zip_stream and read_member_from_zip_stream (reusing safe-extract patterns from utils/zip_reader.py).  
+3. Add Pydantic models: update src/rocrate_mcp/models.py to include FileInfo and CrateDownloadResponse with docstrings and type hints.  
+4. Implement MCP tools: in src/rocrate_mcp/main.py add mcp tools list_crate_files, download_crate, search_by_entity, and improve validation for search_index/get_crate.  
+5. Add tests: create tests/test_zip_utils.py and extend tests/test_mcp_tools.py with new cases for listing and downloading crates; run pytest and fix issues.  
+6. Update README.md and docs to document new MCP tools and the new env option for download limit.  
+7. (Optional/follow-up) Implement streaming downloads or signed URLs for large crates; add server-side progress reporting.
+
+Notes / Risk mitigations
+- Download memory usage: base64-encoding full crate content is simple but not suitable for large archives. The download_size_limit_mb setting mitigates this risk; document and enforce limit. Future improvement: return signed URLs or stream multipart responses.
+- Zip member safety: zip_utils must prevent path traversal and only return safe posix-style member names.
+- Backend compatibility: backends that return BytesIO must be supported; ensure list_files_from_zip_stream accepts any file-like object.

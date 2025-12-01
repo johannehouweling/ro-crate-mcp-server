@@ -64,6 +64,7 @@ class Indexer:
 
         async def worker(res: ResourceInfo) -> None:
             async with sem:
+
                 def read_and_parse() -> IndexEntry | None:
                     stream = self.backend.get_resource_stream(res.locator)
 
@@ -199,9 +200,7 @@ class Indexer:
 
                             for entity in entity_iter:
                                 data = (
-                                    entity.as_jsonld()
-                                    if hasattr(entity, "as_jsonld")
-                                    else entity
+                                    entity.as_jsonld() if hasattr(entity, "as_jsonld") else entity
                                 )
                                 values = get_nested_values(data, field_parts)
                                 if values:
@@ -225,20 +224,25 @@ class Indexer:
                         return extracted
 
                     # Parse metadata JSON-LD file directly (preferred for basic fields)
-                    title = roc.name[0] if hasattr(roc, "name") else ""
-                    description = roc.description[0] if hasattr(roc, "description") else ""
 
                     extracted_fields = extract_fields(roc, roc_type_or_fields_to_index)
 
                     entry = IndexEntry(
                         crate_id=roc.get("@id") or res.locator,
-                        title = title,
-                        description = description,
+                        name=roc.name,
+                        description=roc.description,
+                        license=roc.root_dataset.get("license"),
+                        datepublished=[
+                            datetime.datetime.fromisoformat(a)
+                            for a in roc.root_dataset["datePublished"]
+                        ],
                         resource_locator=res.locator,
                         resource_size=res.size,
                         resource_last_modified=res.last_modified,
                         metadata_path="ro-crate-metadata.json",
-                        top_level_metadata={k:v for k,v in roc.metadata.__dict__.items() if k not in ['crate']},
+                        top_level_metadata={
+                            k: v for k, v in roc.metadata.__dict__.items() if k not in ["crate"]
+                        },
                         extracted_fields=extracted_fields,
                         embedding=compute_embedding(description or title),
                         indexed_at=datetime.datetime.now(datetime.timezone.utc),

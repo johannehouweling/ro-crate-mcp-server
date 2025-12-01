@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -11,17 +9,17 @@ from mcp.server.fastmcp import Context, FastMCP
 from rocrate_mcp.config import Settings
 from rocrate_mcp.index.indexer import Indexer
 from rocrate_mcp.index.storage.sqlite_store import SqliteFTSIndexStore
-from rocrate_mcp.models import SearchFilter
+from rocrate_mcp.models import IndexEntry, SearchFilter
 from rocrate_mcp.rocrate_storage.azure_blob import AzureBlobStorageBackend
 from rocrate_mcp.rocrate_storage.filesystem import FilesystemStorageBackend
-
 
 # ----- Initialization: settings, store, backend, indexer --------------------
 
 settings = Settings()
 
 # Resolve store path and create sqlite-backed index store
-_db_path = settings.indexed_db_path
+# If no indexed_db_path is configured, default to a local file to avoid passing None
+_db_path = settings.indexed_db_path or "rocrate_index.sqlite"
 store = SqliteFTSIndexStore(_db_path)
 
 # Configure backend
@@ -31,21 +29,15 @@ if (settings.backend or "").lower() == "azure":
         raise RuntimeError(
             "ROC_MCP_BACKEND=azure requires ROC_MCP_AZURE_CONNECTION_STRING and ROC_MCP_AZURE_CONTAINER"
         )
-    backend = AzureBlobStorageBackend(
-        settings.azure_connection_string, settings.azure_container
-    )
+    backend = AzureBlobStorageBackend(settings.azure_connection_string, settings.azure_container)
 elif (settings.backend or "").lower() == "filesystem":
     if not settings.filesystem_root:
-        raise RuntimeError(
-            "ROC_MCP_BACKEND=filesystem requires ROC_MCP_FILESYSTEM_ROOT to be set"
-        )
+        raise RuntimeError("ROC_MCP_BACKEND=filesystem requires ROC_MCP_FILESYSTEM_ROOT to be set")
     backend = FilesystemStorageBackend(
         settings.filesystem_root,
         root_prefix=settings.filesystem_root_prefix or None,
         default_suffixes=[
-            s.strip()
-            for s in (settings.filesystem_default_suffixes or "").split(",")
-            if s.strip()
+            s.strip() for s in (settings.filesystem_default_suffixes or "").split(",") if s.strip()
         ],
     )
 else:
@@ -61,15 +53,14 @@ indexer = Indexer(backend=backend, store=store, mode=settings.index_mode)
 
 # ----- Server lifespan: run eager indexing on startup -----------------------
 
+
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[None]:
     """Server-level lifespan. Runs once when the MCP server starts."""
     if settings.index_mode == "eager" and backend is not None:
         print("Starting eager index build (lifespan)...")
         try:
-            await indexer.build_index(
-                roc_type_or_fields_to_index=settings.get_fields_to_index()
-            )
+            await indexer.build_index(roc_type_or_fields_to_index=settings.get_fields_to_index())
             print("Eager index build finished (lifespan)")
         except Exception as e:
             # Don't crash the server if indexing fails; just log
@@ -111,9 +102,41 @@ async def search_index(
     """Search indexed crates.
 
     Read-only tool that performs keyword or semantic search over the index.
+
+    Validation and behavior:
+    - mode must be one of 'keyword' or 'semantic' (semantic requires embeddings available).
+    - field_filters must be a mapping of str->str when provided.
+    - limit is clamped to server-side max_list_limit to avoid expensive queries.
     """
-    filt = SearchFilter(q=q, limit=limit, offset=offset, field_filters=field_filters)
-    results = mcp.state.store.search(filt, mode=(mode or "keyword"))
+    settings_local = mcp.state.settings
+
+    # Validate mode
+    mode_local = (mode or "keyword").lower()
+    if mode_local not in ("keyword", "semantic"):
+        return {"error": "unsupported_mode", "message": "mode must be 'keyword' or 'semantic'"}
+
+    # Validate field_filters
+    if field_filters is not None and not isinstance(field_filters, dict):
+        return {
+            "error": "invalid_field_filters",
+            "message": "field_filters must be a dict[str,str] or null",
+        }
+
+    # Enforce sensible limit bounds
+    try:
+        requested_limit = max(1, int(limit or 0))
+    except Exception:
+        requested_limit = 25
+    max_limit = max(1, int(getattr(settings_local, "max_list_limit", 1000)))
+    effective_limit = min(requested_limit, max_limit)
+
+    filt = SearchFilter(q=q, limit=effective_limit, offset=offset, field_filters=field_filters)
+
+    # If semantic mode is requested but no embeddings configured, return helpful error
+    if mode_local == "semantic" and not getattr(settings_local, "embeddings_provider", None):
+        return {"error": "no_embeddings_provider", "message": "semantic search is not configured"}
+
+    results = mcp.state.store.search(filt, mode=mode_local)
     items: list[dict[str, Any]] = []
     for r in results:
         items.append(
@@ -130,12 +153,73 @@ async def search_index(
 
 
 @mcp.tool()
-async def get_crate(crate_id: str, ctx: Context | None = None) -> dict[str, Any]:
-    """Return the indexed crate metadata for the given crate_id."""
+async def list_all_indexed_crates(
+    limit: int = 100,
+    offset: int = 0,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    settings_local = mcp.state.settings
+    try:
+        requested_limit = max(1, int(limit or 0))
+    except Exception:
+        requested_limit = 100
+    max_limit = max(1, int(getattr(settings_local, "max_list_limit", 1000)))
+    hard_cap = 10000
+    effective_limit = min(requested_limit, max_limit, hard_cap)
+
+    entries = mcp.state.store.listentries()
+    crate_ids = [e.crate_id for e in entries if e is not None]
+    total = len(crate_ids)
+    page = crate_ids[offset : offset + effective_limit]
+    truncated = offset + effective_limit < total
+
+    meta = {
+        "requested_limit": requested_limit,
+        "effective_limit": effective_limit,
+        "offset": offset,
+        "total": total,
+        "truncated": truncated,
+    }
+    return {"count": len(page), "crate_ids": page, "meta": meta}
+
+
+@mcp.resource(uri="rocrate://{crate_id}",mime_type="application/zip")
+async def get_crate_metadata(crate_id: str) -> dict[str, Any]:
+    """Return the indexed crate metadata for the given crate_id.
+
+    Ensures datetimes are serialized to ISO 8601 strings and returns a stable JSON-serializable dict.
+    """
     entry = mcp.state.store.get(crate_id)
     if entry is None:
         return {}
-    return entry.dict()
+
+    d = entry.dict()
+    # Convert known datetime fields to isoformat where present
+    if "indexed_at" in d and d["indexed_at"] is not None:
+        try:
+            d["indexed_at"] = d["indexed_at"].isoformat()
+        except Exception:
+            d["indexed_at"] = str(d["indexed_at"])
+    if "resource_last_modified" in d and d["resource_last_modified"] is not None:
+        try:
+            d["resource_last_modified"] = d["resource_last_modified"].isoformat()
+        except Exception:
+            d["resource_last_modified"] = str(d["resource_last_modified"])
+
+    return 
+
+
+@mcp.resource(uri="rocrate://{crate_id}/metadata")
+async def get_crate_metadata(crate_id: str) -> dict[str, Any]:
+    """Return the top-level ro-crate-metadata.json content for the given crate_id.
+
+    This is a convenience endpoint to retrieve the main metadata without downloading
+    and extracting the entire crate.
+    """
+    entry = mcp.state.store.get(crate_id)
+    if entry is None:
+        return {}
+    return entry.top_level_metadata or {}
 
 
 @mcp.tool()

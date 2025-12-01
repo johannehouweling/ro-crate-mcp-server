@@ -6,15 +6,18 @@ authors = [{ name = "Jente Houweling", email = "Jente.Houweling@rivm.nl" }, {nam
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
- dependencies = [
-     "rocrate>=0.9.0",
-     "fastapi>=0.110.0",
-     "uvicorn>=0.29.0",
-     "azure-storage-blob>=12.14.0",
-     "python-dotenv>=1.0.0",
-     "numpy>=2.2.6",
-     "pydantic-settings>=2.12.0",
-     "mcp[cli]>=1.22.0",
+dependencies = [
+    "rocrate>=0.9.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "azure-storage-blob>=12.14.0",
+    "python-dotenv>=1.0.0",
+    "numpy>=2.2.6",
+    "pydantic-settings>=2.12.0",
+    "mcp[cli]>=1.22.0",
+    "rdflib>=7.0.0",
+    "rdflib-sqlalchemy>=0.5.3",
+    "sqlalchemy>=2.0.44",
 ]
 
 [build-system]

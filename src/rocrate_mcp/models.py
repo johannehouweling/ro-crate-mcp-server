@@ -8,8 +8,12 @@ from pydantic import BaseModel, Field
 
 class IndexEntry(BaseModel):
     crate_id: str
-    title: str = ""
-    description: str = ""
+    # Basic fields rocrate 
+    name: list = ""
+    description: list = ""
+    date_published: list[datetime]|None = None
+    license: list[str]|None = None
+    # Additional indexed fields
     resource_locator: str
     resource_size: int|None = None
     resource_last_modified: datetime|None = None
@@ -30,9 +34,28 @@ class StorageBackendConfig(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     root_prefix: None|str = None
 
-
 class SearchFilter(BaseModel):
     q: None|str = None
     field_filters: None|dict[str, str] = None
     limit: int = 50
     offset: int = 0
+
+
+class FileInfo(BaseModel):
+    """Lightweight description of a file inside a crate archive."""
+    name: str
+    size: int
+    is_dir: bool = False
+
+
+class CrateDownloadResponse(BaseModel):
+    """Response for a crate download request returning metadata and optional stream URL.
+
+    In this MCP server we'll stream directly for filesystem backend; for other backends
+    the response may include a pre-signed URL in stream_url.
+    """
+    crate_id: str
+    resource_locator: str
+    resource_size: int|None = None
+    stream_url: None|str = None
+    files: list[FileInfo] = []

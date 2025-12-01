@@ -1,11 +1,16 @@
-from pydantic_settings import BaseSettings
 from pydantic import SecretStr
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     # Indexing mode: 'eager' will build the index on startup, 'hybrid' or other modes may defer
     index_mode: str = "eager"
 
+    # Storeage backend settings
+    storage_backend: str = "sqlite+fts"  # 'sqlite+fts' | 'rdflib'
+    # RDF store settings
+    rdf_sqlite_url: str | None = "sqlite:///data/rdflib_store.db"
+    
     # Explicit backend selector: 'filesystem' | 'azure' | 'none'
     backend: str = "filesystem"
     default_backend_id: str = "azure_default"
@@ -35,6 +40,9 @@ class Settings(BaseSettings):
 
     # Limits
     max_list_limit: int = 1000  # configurable server-side max for paged listing
+    # Maximum allowed download size for a crate (in megabytes). If a requested download
+    # would exceed this limit the server will refuse to stream it.
+    download_size_limit_mb: int = 100
 
     class Config:
         env_prefix = "ROC_MCP_"
@@ -45,7 +53,8 @@ class Settings(BaseSettings):
 
         Precedence (highest->lowest):
         - ROC_MCP_FIELDS_TO_INDEX -> fields_to_index
-        - ROC_MCP_ROC_MCP_FIELDS_TO_INDEX -> roc_mcp_fields_to_index (some env loaders may not strip prefix)
+        - ROC_MCP_ROC_MCP_FIELDS_TO_INDEX -> roc_mcp_fields_to_index 
+          (some env loaders may not strip prefix)
         - ROC_MCP_ROC_FIELDS_TO_INDEX -> roc_fields_to_index
         """
         raw = ""

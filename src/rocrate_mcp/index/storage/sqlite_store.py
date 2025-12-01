@@ -189,14 +189,16 @@ class SqliteFTSIndexStore:
     def _entry_to_row(self, entry: IndexEntry) -> dict[str, Any]:
         return {
             "crate_id": entry.crate_id,
+            "name": entry.name,
+            "description": entry.description,
+            "date_published": entry.date_published,
+            "license": entry.license,
             "resource_locator": entry.resource_locator,
             "resource_size": entry.resource_size,
             "resource_last_modified": entry.resource_last_modified.isoformat() if entry.resource_last_modified else None,
             "metadata_path": entry.metadata_path,
             "top_level_metadata": json.dumps(entry.top_level_metadata or {}),
             "extracted_fields": json.dumps(entry.extracted_fields or {}),
-            "title": entry.title,
-            "description": entry.description,
             "checksum": entry.checksum,
             "version": entry.version,
             "storage_backend_id": entry.storage_backend_id,
@@ -208,8 +210,10 @@ class SqliteFTSIndexStore:
     def _row_to_entry(self, row: sqlite3.Row) -> IndexEntry:
         data: dict[str, Any] = {
             "crate_id": row["crate_id"],
-            "title": row.get("title") or "",
-            "description": row.get("description") or "",
+            "name": row["name"] or [],
+            "description": row["description"] or [],
+            "date_published": row["date_published"] or None,
+            "license": row["license"] or None,
             "resource_locator": row["resource_locator"],
             "resource_size": row["resource_size"],
             "resource_last_modified": None,
@@ -321,13 +325,18 @@ class SqliteFTSIndexStore:
                         except Exception:
                             continue
 
-    def get(self, crate_id: str) -> Optional[IndexEntry]:
+    def get(self, crate_id: str) -> IndexEntry|None:
         cur = self._conn.execute("SELECT * FROM entries WHERE crate_id = ?;", (crate_id,))
         row = cur.fetchone()
         if row is None:
             return None
         return self._row_to_entry(row)
 
+    def listentries(self) -> list[None|IndexEntry]:
+        cur = self._conn.execute("SELECT * FROM entries;")
+        rows = cur.fetchall()
+        return [self._row_to_entry(r) for r in rows]
+    
     def _make_combined_text(self, entry: IndexEntry) -> str:
         # include title/description along with flattened extracted_fields
         parts: list[str] = []
