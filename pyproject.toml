@@ -13,6 +13,8 @@ requires-python = ">=3.12"
      "azure-storage-blob>=12.14.0",
      "python-dotenv>=1.0.0",
      "numpy>=2.2.6",
+     "pydantic-settings>=2.12.0",
+     "mcp[cli]>=1.22.0",
 ]
 
 [build-system]

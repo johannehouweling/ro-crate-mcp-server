@@ -36,7 +36,7 @@ class Indexer:
 
     async def build_index(
         self,
-        roc_type_or_fields_to_index: list[str] | None = None,
+        roc_type_or_fields_to_index: list[str] = [],
     ) -> None:
         """
         Build an index from all resources exposed by the backend.
@@ -57,8 +57,6 @@ class Indexer:
                 "Dataset.license.@id",     # license IRIs for datasets
             ]
         """
-        if roc_type_or_fields_to_index is None:
-            roc_type_or_fields_to_index = []
 
         loop = asyncio.get_running_loop()
         sem = asyncio.Semaphore(self.concurrency)

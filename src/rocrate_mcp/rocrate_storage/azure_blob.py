@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import io
-from collections.abc import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
-from azure.storage.blob import BlobClient, ContainerClient
+from azure.storage.blob import ContainerClient
 
 from .base import ResourceInfo, StorageBackend
 

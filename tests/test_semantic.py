@@ -1,11 +1,12 @@
 import io
 import json
+import pathlib
 import zipfile
 from datetime import datetime
 
 import numpy as np
 
-from rocrate_mcp.index.storage.store import IndexStore
+from rocrate_mcp.index.storage.sqlite_store import SqliteFTSIndexStore
 from rocrate_mcp.models import IndexEntry
 
 
@@ -17,7 +18,7 @@ def make_rocrate_blob(name, id_):
 
 
 def test_semantic_search_basic():
-    store = IndexStore()
+    store = SqliteFTSIndexStore(pathlib.Path().cwd())
     blobs = [
         ("alpha crate", "id1"),
         ("beta crate", "id2"),
