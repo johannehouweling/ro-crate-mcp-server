@@ -5,9 +5,9 @@ import logging
 import threading
 import uuid
 from collections.abc import Iterable
-from datetime import datetime, timezone, UTC
+from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
