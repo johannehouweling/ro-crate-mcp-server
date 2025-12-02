@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+import datetime
 from typing import Any, Literal
 
-from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, String, Text, Integer, JSON
 from pydantic import BaseModel, Field
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import declarative_base
 
 # SQLAlchemy base for ORM models
 Base = declarative_base()
@@ -16,20 +16,20 @@ class IndexEntry(Base):
 
     crate_id = Column(String, primary_key=True)
     # lists and complex fields are stored as JSON
-    name = Column(JSON)
-    description = Column(JSON)
-    date_published = Column(JSON)
-    license = Column(JSON)
+    name = Column(Text)
+    description = Column(Text)
+    date_published = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
+    license = Column(Text)
     resource_locator = Column(Text)
     resource_size = Column(Integer)
-    resource_last_modified = Column(Text)
+    resource_last_modified = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
     metadata_path = Column(Text)
     top_level_metadata = Column(JSON)
     extracted_fields = Column(JSON)
-    checksum = Column(Text)
+    checksum_metadata_json = Column(Text)
     version = Column(Text)
     storage_backend_id = Column(Text)
-    indexed_at = Column(Text)
+    indexed_at = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
     validation_status = Column(Text)
     embedding = Column(JSON)
 
@@ -37,17 +37,17 @@ class IndexEntry(Base):
         """Return a JSON-serializable representation of the entry."""
         d = {
             "crate_id": self.crate_id,
-            "name": self.name or [],
-            "description": self.description or [],
+            "name": self.name or "",
+            "description": self.description or "",
             "date_published": self.date_published or None,
-            "license": self.license or [],
+            "license": self.license or "",
             "resource_locator": self.resource_locator,
             "resource_size": self.resource_size,
             "resource_last_modified": self.resource_last_modified,
             "metadata_path": self.metadata_path,
             "top_level_metadata": self.top_level_metadata or {},
             "extracted_fields": self.extracted_fields or {},
-            "checksum": self.checksum,
+            "checksum_metadata_json": self.checksum_metadata_json,
             "version": self.version,
             "storage_backend_id": self.storage_backend_id,
             "indexed_at": self.indexed_at,
@@ -55,6 +55,40 @@ class IndexEntry(Base):
             "embedding": self.embedding,
         }
         return d
+
+
+# Materialized entity tables for fast property queries
+class EntityGlobal(Base):
+    __tablename__ = "entities_global"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    type_name = Column(Text, nullable=False)
+    entity_id = Column(Text)
+    label = Column(Text)
+    raw_json = Column(Text)
+    created_at = Column(Text)
+    updated_at = Column(Text)
+    __table_args__ = (UniqueConstraint("type_name", "entity_id", name="uq_entities_type_id"),)
+
+
+class EntityInCrate(Base):
+    __tablename__ = "entity_in_crate"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity_global_id = Column(Integer, ForeignKey("entities_global.id", ondelete="CASCADE"), nullable=False)
+    crate_id = Column(Text, nullable=False)
+    crate_metadata_path = Column(Text)
+    occurrence_json = Column(Text)
+    created_at = Column(Text)
+    __table_args__ = (UniqueConstraint("entity_global_id", "crate_id", name="uq_entity_in_crate"),)
+
+
+class EntityProperty(Base):
+    __tablename__ = "entity_properties"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity_global_id = Column(Integer, ForeignKey("entities_global.id", ondelete="CASCADE"), nullable=False)
+    prop_path = Column(Text, nullable=False)
+    prop_value = Column(Text, nullable=False)
+    prop_value_json = Column(Text)
+    created_at = Column(Text)
 
 
 # Keep other Pydantic models (unchanged)
@@ -77,5 +111,3 @@ class FileInfo(BaseModel):
     name: str
     size: int
     is_dir: bool = False
-
-

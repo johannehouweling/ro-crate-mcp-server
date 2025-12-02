@@ -1,28 +1,33 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
-from sqlalchemy import (
-    create_engine,
-    text,
-)
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
-from ...models import Base as ORMBase
-from ...models import IndexEntry, SearchFilter
+from ...models import (
+    Base as ORMBase,
+)
+from ...models import (
+    EntityGlobal,
+    EntityInCrate,
+    EntityProperty,
+    IndexEntry,
+    SearchFilter,
+)
+
+logger = logging.getLogger(__name__)
 
 Base = ORMBase
-
-
-# Use the ORM IndexEntry model from models.py as the mapped class for entries
 Entry = IndexEntry
 
 
@@ -31,7 +36,8 @@ class SqliteFTSIndexStore:
     SQLAlchemy ORM-backed SQLite index store using FTS5 for keyword search.
 
     Uses a declarative Entry model and sessionmaker for DB access. FTS5
-    virtual table creation is run via raw DDL.
+    virtual table creation is run via raw DDL. Materialization of entities is
+    implemented using ORM models (EntityGlobal, EntityInCrate, EntityProperty).
     """
 
     def _resolve_db_path(self, db_path: str) -> str:
@@ -104,41 +110,14 @@ class SqliteFTSIndexStore:
                 conn.execute(text("PRAGMA busy_timeout = 5000;"))
                 conn.execute(text("PRAGMA foreign_keys = ON;"))
             except Exception:
-                pass
+                logger.debug("failed to set pragmas", exc_info=True)
 
-            # create ORM-backed table via metadata
+            # create ORM-backed tables via metadata
             try:
                 Base.metadata.create_all(self._engine)
             except Exception:
-                # fallback to explicit DDL
-                try:
-                    conn.execute(
-                        text(
-                            """
-                            CREATE TABLE IF NOT EXISTS entries (
-                                crate_id TEXT PRIMARY KEY,
-                                name TEXT,
-                                description TEXT,
-                                date_published TEXT,
-                                license TEXT,
-                                resource_locator TEXT,
-                                resource_size INTEGER,
-                                resource_last_modified TEXT,
-                                metadata_path TEXT,
-                                top_level_metadata TEXT,
-                                extracted_fields TEXT,
-                                checksum TEXT,
-                                version TEXT,
-                                storage_backend_id TEXT,
-                                indexed_at TEXT,
-                                validation_status TEXT,
-                                embedding TEXT
-                            );
-                            """
-                        )
-                    )
-                except Exception:
-                    pass
+                # fallback to explicit DDL for the entries table
+                logger.debug("failed to create fallback entries table", exc_info=True)
 
             # create FTS5 virtual table (raw DDL)
             try:
@@ -148,180 +127,104 @@ class SqliteFTSIndexStore:
                     )
                 )
             except Exception:
+                logger.info("FTS5 not available - falling back to non-FTS search")
                 self._fts_available = False
 
-            # create materialization tables
+            # create materialization tables via ORM metadata
             try:
-                stmts = [
-                    (
-                        "CREATE TABLE IF NOT EXISTS entities_global ("
-                        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                        "type_name TEXT NOT NULL,"
-                        "entity_id TEXT,"
-                        "label TEXT,"
-                        "raw_json TEXT,"
-                        "created_at TEXT,"
-                        "updated_at TEXT,"
-                        "UNIQUE(type_name, entity_id) ON CONFLICT IGNORE"
-                        ");"
-                    ),
-                    (
-                        "CREATE TABLE IF NOT EXISTS entity_in_crate ("
-                        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                        "entity_global_id INTEGER NOT NULL REFERENCES entities_global(id) ON DELETE CASCADE,"
-                        "crate_id TEXT NOT NULL,"
-                        "crate_metadata_path TEXT,"
-                        "occurrence_json TEXT,"
-                        "created_at TEXT,"
-                        "UNIQUE(entity_global_id, crate_id) ON CONFLICT IGNORE"
-                        ");"
-                    ),
-                    (
-                        "CREATE TABLE IF NOT EXISTS entity_properties ("
-                        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                        "entity_global_id INTEGER NOT NULL REFERENCES entities_global(id) ON DELETE CASCADE,"
-                        "prop_path TEXT NOT NULL,"
-                        "prop_value TEXT NOT NULL,"
-                        "prop_value_json TEXT,"
-                        "created_at TEXT"
-                        ");"
-                    ),
-                ]
-                for s in stmts:
-                    conn.execute(text(s))
+                Base.metadata.create_all(self._engine)
             except OperationalError:
                 self._materialize_entities_enabled = False
 
     # ----------------------
     # Serialization helpers
     # ----------------------
-    def _serialize_list_nullable(self, val: Optional[Any]) -> Optional[str]:
-        if val is None:
-            return None
-        try:
-            return json.dumps(val)
-        except Exception:
-            return json.dumps(list(val) if isinstance(val, Iterable) else [val])
 
-    def _serialize_date_list(self, val: Optional[Any]) -> Optional[str]:
-        if val is None:
-            return None
-        try:
-            return json.dumps([d.isoformat() if hasattr(d, "isoformat") else str(d) for d in val])
-        except Exception:
-            return json.dumps(val)
 
     def _entry_to_mapping(self, entry: IndexEntry) -> dict[str, Any]:
-        # serialize list/dict fields to JSON strings because table columns are TEXT
-        def _as_json(x: Any) -> Optional[str]:
-            if x is None:
-                return None
-            try:
-                return json.dumps(x)
-            except Exception:
-                return json.dumps(list(x) if isinstance(x, Iterable) else [x])
-
-        def _dates_as_json(dates: Any) -> Optional[str]:
-            if dates is None:
-                return None
-            try:
-                return json.dumps(
-                    [d.isoformat() if hasattr(d, "isoformat") else str(d) for d in dates]
-                )
-            except Exception:
-                return json.dumps(dates)
+        """Return a mapping of values suitable for constructing/updating an IndexEntry ORM object."""
 
         return {
             "crate_id": entry.crate_id,
-            "name": _as_json(entry.name),
-            "description": _as_json(entry.description),
-            "date_published": _dates_as_json(entry.date_published),
-            "license": _as_json(entry.license),
+            "name": entry.name,
+            "description": entry.description,
+            "date_published": entry.date_published,
+            "license": entry.license,
             "resource_locator": entry.resource_locator,
             "resource_size": entry.resource_size,
-            "resource_last_modified": entry.resource_last_modified.isoformat()
+            "resource_last_modified": entry.resource_last_modified
             if entry.resource_last_modified
             else None,
             "metadata_path": entry.metadata_path,
-            "top_level_metadata": _as_json(entry.top_level_metadata or {}),
-            "extracted_fields": _as_json(entry.extracted_fields or {}),
-            "checksum": entry.checksum,
+            "top_level_metadata": entry.top_level_metadata or {},
+            "extracted_fields": entry.extracted_fields or {},
+            "checksum_metadata_json": entry.checksum_metadata_json,
             "version": entry.version,
             "storage_backend_id": entry.storage_backend_id,
             "indexed_at": (
-                entry.indexed_at.astimezone(timezone.utc).isoformat()
+                entry.indexed_at.astimezone(UTC)
                 if hasattr(entry.indexed_at, "astimezone")
                 else (
                     entry.indexed_at
                     if entry.indexed_at is not None
-                    else datetime.now(timezone.utc).isoformat()
+                    else datetime.now(UTC)
                 )
             ),
             "validation_status": entry.validation_status,
-            "embedding": _as_json(entry.embedding) if entry.embedding is not None else None,
+            "embedding": entry.embedding if entry.embedding is not None else None,
         }
-
-
-    # (Removed helper methods _load_json_list and _load_date_list — they were unused.)
-
 
     # ----------------------
     # CRUD
     # ----------------------
     def insert(self, entry: IndexEntry) -> None:
+        """Insert or update an IndexEntry using the ORM.
+
+        This will also update the FTS index and optionally run entity
+        materialization.
+        """
+        mapping = self._entry_to_mapping(entry)
+        logger.debug("insert mapping: %s", mapping)
         with self._lock:
-            mapping = self._entry_to_mapping(entry)
-            # debug: show mapping before DB insert
-            print("[sqlite_store] insert mapping:", mapping)
             with self._Session() as session:
-                # upsert via merge or use INSERT OR REPLACE mapping
                 obj = session.get(Entry, entry.crate_id)
-                print("[sqlite_store] found existing obj:", obj)
                 if obj is None:
                     obj = Entry(**mapping)
                     session.add(obj)
                 else:
                     for k, v in mapping.items():
                         setattr(obj, k, v)
-                print("[sqlite_store] session new:", list(session.new))
-                print("[sqlite_store] session dirty:", list(session.dirty))
                 try:
                     session.commit()
-                except Exception as e:
-                    print("[sqlite_store] commit failed:", e)
+                except Exception:
+                    logger.exception("commit failed")
                     raise
-                # after commit, check direct DB contents for debugging
+
+            # maintain FTS index using a separate connection
+            if self._fts_available:
+                combined_text = self._make_combined_text(entry)
+                with self._engine.begin() as conn:
+                    conn.execute(
+                        text("DELETE FROM entries_fts WHERE crate_id = :cid"),
+                        {"cid": entry.crate_id},
+                    )
+                    conn.execute(
+                        text(
+                            "INSERT INTO entries_fts (crate_id, combined_text) VALUES (:cid, :ct)"
+                        ),
+                        {"cid": entry.crate_id, "ct": combined_text},
+                    )
+
+            # materialize entities using ORM inside a session transaction
+            if self._materialize_entities_enabled:
                 try:
-                    with self._engine.connect() as conn:
-                        res = conn.execute(
-                            text("SELECT crate_id FROM entries WHERE crate_id = :cid"),
-                            {"cid": entry.crate_id},
-                        ).fetchall()
-                        print("[sqlite_store] post-commit select rows:", res)
-                except Exception as e:
-                    print("[sqlite_store] post-commit select failed:", e)
-
-                if self._fts_available:
-                    combined_text = self._make_combined_text(entry)
-                    with self._engine.begin() as conn:
-                        conn.execute(
-                            text("DELETE FROM entries_fts WHERE crate_id = :cid"),
-                            {"cid": entry.crate_id},
-                        )
-                        conn.execute(
-                            text(
-                                "INSERT INTO entries_fts (crate_id, combined_text) VALUES (:cid, :ct)"
-                            ),
-                            {"cid": entry.crate_id, "ct": combined_text},
-                        )
-
-                if self._materialize_entities_enabled:
-                    try:
-                        # run materialization using a direct connection
-                        with self._engine.begin() as conn:
-                            self._materialize_entry(entry, conn)
-                    except Exception:
-                        pass
+                    with self._Session() as session:
+                        with session.begin():
+                            self._materialize_entry(entry, session)
+                except Exception:
+                    logger.debug(
+                        "entity materialization failed for %s", entry.crate_id, exc_info=True
+                    )
 
     def bulk_insert(self, entries: Iterable[IndexEntry]) -> None:
         with self._lock:
@@ -330,7 +233,6 @@ class SqliteFTSIndexStore:
                 return
             mappings = [self._entry_to_mapping(e) for e in entries_list]
             with self._Session() as session:
-                # use bulk upsert by executing INSERT OR REPLACE via raw SQL per row (ensures portability)
                 for m in mappings:
                     obj = session.get(Entry, m["crate_id"]) if m.get("crate_id") else None
                     if obj is None:
@@ -345,7 +247,7 @@ class SqliteFTSIndexStore:
                     for e_row in mappings:
                         crate_id = e_row["crate_id"]
                         try:
-                            extracted_fields = json.loads(e_row["extracted_fields"] or "{}")
+                            extracted_fields = e_row["extracted_fields"] or {}
                         except Exception:
                             extracted_fields = {}
                         combined_text = self._make_combined_text_from_json(extracted_fields)
@@ -360,27 +262,26 @@ class SqliteFTSIndexStore:
                         )
 
             if self._materialize_entities_enabled:
-                with self._engine.begin() as conn:
-                    for e in entries_list:
-                        try:
-                            self._materialize_entry(e, conn)
-                        except Exception:
-                            continue
+                with self._Session() as session:
+                    with session.begin():
+                        for e in entries_list:
+                            try:
+                                self._materialize_entry(e, session)
+                            except Exception:
+                                logger.debug(
+                                    "materialize failed for entry %s",
+                                    getattr(e, "crate_id", None),
+                                    exc_info=True,
+                                )
 
     def get(self, crate_id: str) -> IndexEntry | None:
-        """Return an ORM IndexEntry instance with sensible Python defaults.
-
-        Because the IndexEntry columns are declared using SQLAlchemy's JSON
-        type where appropriate, SQLAlchemy will already return Python objects
-        (lists/dicts) for those columns. We only need to normalize None ->
-        empty containers for convenience.
-        """
+        """Return an ORM IndexEntry instance with sensible Python defaults."""
         with self._Session() as session:
             orm = session.get(Entry, crate_id)
             if orm is None:
                 return None
 
-            # Normalize values to predictable Python types (no json.loads needed)
+            # Normalize values to predictable Python types
             orm.name = orm.name or []
             orm.description = orm.description or []
             orm.date_published = orm.date_published or None
@@ -395,7 +296,6 @@ class SqliteFTSIndexStore:
             rows = session.query(Entry).all()
             results: list[IndexEntry] = []
             for orm in rows:
-                # reuse get() deserialization logic by calling get on each id (simpler and safe)
                 results.append(self.get(orm.crate_id))
             return results
 
@@ -501,6 +401,7 @@ class SqliteFTSIndexStore:
     def find_crates_by_entity_property(
         self, type_name: str, prop_path: str, prop_value: str, exact: bool = True
     ) -> list[str]:
+        # Keep raw SQL for this multi-join query for simplicity/performance
         if exact:
             q = (
                 "SELECT DISTINCT eic.crate_id"
@@ -573,7 +474,12 @@ class SqliteFTSIndexStore:
     # ----------------------
     # Entity materialization helpers
     # ----------------------
-    def _materialize_entry(self, entry: IndexEntry, conn) -> None:
+    def _materialize_entry(self, entry: IndexEntry, session) -> None:
+        """Materialize entities found in an entry's extracted_fields using ORM models.
+
+        Expects an active transactional session (sessionmaker Session) and will
+        create/update EntityGlobal, EntityInCrate and EntityProperty rows.
+        """
         try:
             extracted = entry.extracted_fields or {}
         except Exception:
@@ -597,92 +503,71 @@ class SqliteFTSIndexStore:
                 label = entity.get("name") or entity.get("title") or None
                 raw_json = json.dumps(entity)
 
-                cur = conn.execute(
-                    text(
-                        "SELECT id FROM entities_global WHERE type_name = :tn AND entity_id = :eid"
-                    ),
-                    {"tn": type_name, "eid": entity_id},
+                eg = (
+                    session.query(EntityGlobal)
+                    .filter(EntityGlobal.type_name == type_name)
+                    .filter(EntityGlobal.entity_id == entity_id)
+                    .one_or_none()
                 )
-                row = cur.fetchone()
-                if row:
-                    egid = row[0]
-                    try:
-                        conn.execute(
-                            text(
-                                "UPDATE entities_global SET label = :label, raw_json = :raw, updated_at = :upd WHERE id = :id"
-                            ),
-                            {"label": label, "raw": raw_json, "upd": now, "id": egid},
-                        )
-                    except Exception:
-                        pass
+                if eg is not None:
+                    eg.label = label
+                    eg.raw_json = raw_json
+                    eg.updated_at = now
                 else:
-                    cur = conn.execute(
-                        text(
-                            "INSERT INTO entities_global (type_name, entity_id, label, raw_json, created_at, updated_at) VALUES (:tn, :eid, :label, :raw, :now, :now)"
-                        ),
-                        {
-                            "tn": type_name,
-                            "eid": entity_id,
-                            "label": label,
-                            "raw": raw_json,
-                            "now": now,
-                        },
+                    eg = EntityGlobal(
+                        type_name=type_name,
+                        entity_id=entity_id,
+                        label=label,
+                        raw_json=raw_json,
+                        created_at=now,
+                        updated_at=now,
                     )
-                    try:
-                        egid = cur.lastrowid
-                    except Exception:
-                        egid = conn.execute(
-                            text(
-                                "SELECT id FROM entities_global WHERE type_name = :tn AND entity_id = :eid"
-                            ),
-                            {"tn": type_name, "eid": entity_id},
-                        ).fetchone()[0]
+                    session.add(eg)
+                    session.flush()  # ensure eg.id is populated
 
-                cur = conn.execute(
-                    text(
-                        "SELECT id FROM entity_in_crate WHERE entity_global_id = :egid AND crate_id = :cid"
-                    ),
-                    {"egid": egid, "cid": crate_id},
+                # ensure entity_in_crate exists
+                eic = (
+                    session.query(EntityInCrate)
+                    .filter(EntityInCrate.entity_global_id == eg.id)
+                    .filter(EntityInCrate.crate_id == crate_id)
+                    .one_or_none()
                 )
-                if not cur.fetchone():
-                    conn.execute(
-                        text(
-                            "INSERT INTO entity_in_crate (entity_global_id, crate_id, crate_metadata_path, occurrence_json, created_at) VALUES (:egid, :cid, :mp, :occ, :now)"
-                        ),
-                        {
-                            "egid": egid,
-                            "cid": crate_id,
-                            "mp": metadata_path,
-                            "occ": raw_json,
-                            "now": now,
-                        },
+                if eic is None:
+                    eic = EntityInCrate(
+                        entity_global_id=eg.id,
+                        crate_id=crate_id,
+                        crate_metadata_path=metadata_path,
+                        occurrence_json=raw_json,
+                        created_at=now,
                     )
+                    session.add(eic)
 
+                # replace properties
                 try:
-                    conn.execute(
-                        text("DELETE FROM entity_properties WHERE entity_global_id = :egid"),
-                        {"egid": egid},
-                    )
+                    session.query(EntityProperty).filter(
+                        EntityProperty.entity_global_id == eg.id
+                    ).delete()
                 except Exception:
-                    pass
+                    logger.debug("failed to delete old properties for %s", eg.id, exc_info=True)
 
                 props = self._extract_primitive_properties(entity)
                 for prop_path, value in props:
                     try:
-                        conn.execute(
-                            text(
-                                "INSERT INTO entity_properties (entity_global_id, prop_path, prop_value, prop_value_json, created_at) VALUES (:egid, :pp, :pv, :pvj, :now)"
-                            ),
-                            {
-                                "egid": egid,
-                                "pp": prop_path,
-                                "pv": str(value),
-                                "pvj": json.dumps(value),
-                                "now": now,
-                            },
+                        ep = EntityProperty(
+                            entity_global_id=eg.id,
+                            prop_path=prop_path,
+                            prop_value=str(value),
+                            prop_value_json=json.dumps(value),
+                            created_at=now,
                         )
+                        session.add(ep)
                     except Exception:
-                        continue
+                        logger.debug(
+                            "failed to add property %s for entity %s",
+                            prop_path,
+                            entity_id,
+                            exc_info=True,
+                        )
 
     def _extract_primitive_properties(self, obj: Any, prefix: str = "") -> list[tuple[str, Any]]:
         results: list[tuple[str, Any]] = []

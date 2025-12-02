@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import os
+import hashlib
 import shutil
+import uuid
 from collections.abc import Iterable
 from typing import Any
 
@@ -210,13 +211,12 @@ class Indexer:
                             pass
                         return None
 
-                    # roc_dummy_path is the temp folder containing ro-crate-metadata.json
+                    # roc_meta_path is the temp folder containing ro-crate-metadata.json
                     roc_meta_path = roc_json_paths[0]
-                    roc_dummy_path = os.path.dirname(roc_meta_path)
 
                     roc = None
                     try:
-                        roc = ROCrate(roc_dummy_path)
+                        roc = ROCrate(roc_meta_path.parent)
                     except Exception:
                         return None
 
@@ -227,28 +227,16 @@ class Indexer:
 
                     # Construct ORM IndexEntry mapped object
                     entry = IndexEntry(
-                        crate_id=(
-                            roc.root_dataset.get("@id") if getattr(roc, "root_dataset", None) else None
-                        ) or res.locator,
-                        name=(getattr(roc, "name", None) or []) if roc is not None else [],
-                        description=(getattr(roc, "description", None) or []) if roc is not None else [],
-                        license=(
-                            roc.root_dataset.get("license")
-                            if getattr(roc, "root_dataset", None)
-                            else None
-                        ),
-                        date_published=[
-                            datetime.datetime.fromisoformat(a)
-                            for a in (
-                                roc.root_dataset.get("datePublished", [])
-                                if getattr(roc, "root_dataset", None)
-                                else []
-                            )
-                        ],
+                        crate_id=uuid.uuid4().hex,
+                        name=" ".join(roc.name) if getattr(roc, "name", None) else "",
+                        description=" ".join(roc.description) if roc is not None else "",
+                        license=" ".join(roc.root_dataset.get("license", [])),
+                        date_published=datetime.datetime.fromisoformat(roc.root_dataset.get("datePublished", [])[0]),
                         resource_locator=res.locator,
                         resource_size=res.size,
                         resource_last_modified=res.last_modified,
                         metadata_path="ro-crate-metadata.json",
+                        checksum_metadata_json=f"sha256:{hashlib.sha256(roc_meta_path.read_bytes()).hexdigest()}",
                         top_level_metadata=roc.metadata.as_jsonld()
                         if getattr(roc, "metadata", None)
                         else {},
@@ -256,12 +244,12 @@ class Indexer:
                         embedding=compute_embedding(
                             " ".join(roc.name + roc.description) if roc else ""
                         ),
-                        indexed_at=datetime.datetime.now(datetime.UTC).isoformat(),
+                        indexed_at=datetime.datetime.now(datetime.UTC),
                     )
 
                     # cleanup temporary extracted folder
                     try:
-                        shutil.rmtree(roc_dummy_path)
+                        shutil.rmtree(roc_meta_path.parent)
                     except Exception:
                         pass
 
@@ -273,10 +261,18 @@ class Indexer:
 
                     return entry
 
+                print("[indexer] submitting read_and_parse to executor for", res.locator)
                 entry = await loop.run_in_executor(None, read_and_parse)
+                print("[indexer] read_and_parse returned:", entry)
                 if entry is not None:
                     print("[indexer] inserting entry:", getattr(entry, "crate_id", None))
-                    self.store.insert(entry)
+                    try:
+                        self.store.insert(entry)
+                    except Exception as e:
+                        print("[indexer] store.insert raised:", e)
+                        raise
+                else:
+                    print("[indexer] no entry parsed for", res.locator)
 
         for res in self.backend.list_resources():
             tasks.append(asyncio.create_task(worker(res)))

@@ -4,15 +4,14 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import BinaryIO, Optional
+from typing import BinaryIO
 
 
-def _safe_extract_member(zf: zipfile.ZipFile, member: str, dest_dir: str) -> Optional[str]:
+def _safe_extract_member(zf: zipfile.ZipFile, member: str, dest_dir_path: Path) -> None|Path:
     """Extract a single member from the ZipFile into dest_dir safely (prevents path traversal).
 
     Returns the absolute path to the extracted file, or None on failure or if the member is unsafe.
     """
-    dest_dir_path = Path(dest_dir)
     target_path = dest_dir_path.joinpath(member)
 
     try:
@@ -28,7 +27,7 @@ def _safe_extract_member(zf: zipfile.ZipFile, member: str, dest_dir: str) -> Opt
     # If the member is a directory, create it and return
     if member.endswith("/") or member.endswith("\\"):
         target_path.mkdir(parents=True, exist_ok=True)
-        return str(target_path.resolve())
+        return target_path.resolve()
 
     # Ensure parent directory exists
     parent = target_path.parent
@@ -39,12 +38,12 @@ def _safe_extract_member(zf: zipfile.ZipFile, member: str, dest_dir: str) -> Opt
     try:
         with zf.open(member, "r") as src, open(target_path, "wb") as dst:
             shutil.copyfileobj(src, dst)
-        return str(target_path.resolve())
+        return target_path.resolve()
     except Exception:
         return None
 
 
-def extract_files_from_zip_stream(stream: BinaryIO, target_names: list[str]) -> list[str]:
+def extract_files_from_zip_stream(stream: BinaryIO, target_names: list[str]) -> list[Path]:
     """Stream a zip archive from a binary stream to disk, extract matching target files into a temp folder,
     and return the absolute file paths of extracted targets.
 
@@ -70,7 +69,7 @@ def extract_files_from_zip_stream(stream: BinaryIO, target_names: list[str]) -> 
             pass
         raise
 
-    extracted_paths: list[str] = []
+    extracted_paths: list[Path] = []
     try:
         with zipfile.ZipFile(str(temp_zip_path), "r") as zf:
             namelist = zf.namelist()
