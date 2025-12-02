@@ -1,40 +1,45 @@
 from __future__ import annotations
 
-import os
 import shutil
 import tempfile
 import zipfile
-from typing import BinaryIO
+from pathlib import Path
+from typing import BinaryIO, Optional
 
 
-def _safe_extract_member(zf: zipfile.ZipFile, member: str, dest_dir: str) -> None|str:
+def _safe_extract_member(zf: zipfile.ZipFile, member: str, dest_dir: str) -> Optional[str]:
     """Extract a single member from the ZipFile into dest_dir safely (prevents path traversal).
 
     Returns the absolute path to the extracted file, or None on failure or if the member is unsafe.
     """
-    # Build normalized target path and normalized destination directory
-    target_path = os.path.normpath(os.path.join(dest_dir, member))
-    dest_dir_norm = os.path.normpath(dest_dir)
+    dest_dir_path = Path(dest_dir)
+    target_path = dest_dir_path.joinpath(member)
+
+    try:
+        target_resolved = target_path.resolve()
+        dest_resolved = dest_dir_path.resolve()
+    except Exception:
+        return None
 
     # Prevent path traversal: the target must reside inside dest_dir
-    if not (target_path == dest_dir_norm or target_path.startswith(dest_dir_norm + os.sep)):
+    if not (target_resolved == dest_resolved or dest_resolved in target_resolved.parents):
         return None
 
     # If the member is a directory, create it and return
     if member.endswith("/") or member.endswith("\\"):
-        os.makedirs(target_path, exist_ok=True)
-        return os.path.abspath(target_path)
+        target_path.mkdir(parents=True, exist_ok=True)
+        return str(target_path.resolve())
 
     # Ensure parent directory exists
-    parent = os.path.dirname(target_path)
+    parent = target_path.parent
     if parent:
-        os.makedirs(parent, exist_ok=True)
+        parent.mkdir(parents=True, exist_ok=True)
 
     # Stream extract the file to disk
     try:
         with zf.open(member, "r") as src, open(target_path, "wb") as dst:
             shutil.copyfileobj(src, dst)
-        return os.path.abspath(target_path)
+        return str(target_path.resolve())
     except Exception:
         return None
 
@@ -46,16 +51,16 @@ def extract_files_from_zip_stream(stream: BinaryIO, target_names: list[str]) -> 
     Behavior:
     - The incoming stream is written to a temporary file on disk (streaming; avoids loading the entire archive into memory).
     - A temporary directory is created to hold both the written archive and the extracted files. The directory is
-      intentionally left in place so callers can access the extracted files; callers are responsible for cleanup.
+    intentionally left in place so callers can access the extracted files; callers are responsible for cleanup.
     - Matching is attempted first by exact entry name, then by case-insensitive suffix match.
     - The returned list preserves discovery order and may be empty if no matches were found.
     """
-    temp_dir = tempfile.mkdtemp(prefix="rocrate_zip_")
-    temp_zip_path = os.path.join(temp_dir, "archive.zip")
+    temp_dir = Path(tempfile.mkdtemp(prefix="rocrate_zip_"))
+    temp_zip_path = temp_dir / "archive.zip"
 
     # Write incoming stream to a temporary zip file on disk
     try:
-        with open(temp_zip_path, "wb") as out_file:
+        with temp_zip_path.open("wb") as out_file:
             shutil.copyfileobj(stream, out_file)
     except Exception:
         # Attempt cleanup if write fails, then re-raise
@@ -67,7 +72,7 @@ def extract_files_from_zip_stream(stream: BinaryIO, target_names: list[str]) -> 
 
     extracted_paths: list[str] = []
     try:
-        with zipfile.ZipFile(temp_zip_path, "r") as zf:
+        with zipfile.ZipFile(str(temp_zip_path), "r") as zf:
             namelist = zf.namelist()
 
             # Exact name matches first
@@ -77,16 +82,16 @@ def extract_files_from_zip_stream(stream: BinaryIO, target_names: list[str]) -> 
                     path = _safe_extract_member(zf, target, temp_dir)
                     if path:
                         extracted_paths.append(path)
-                        found.add(os.path.basename(target).lower())
+                        found.add(Path(target).name.lower())
 
             # If we've already found all targets, return early to avoid extra extraction
-            if len(found) == len({os.path.basename(t).lower() for t in target_names}):
+            if len(found) == len({Path(t).name.lower() for t in target_names}):
                 return extracted_paths
 
             # Case-insensitive suffix fallback for targets not yet found
             remaining = [
                 t for t in target_names
-                if os.path.basename(t).lower() not in found
+                if Path(t).name.lower() not in found
             ]
             if remaining:
                 for entry in namelist:
@@ -103,4 +108,3 @@ def extract_files_from_zip_stream(stream: BinaryIO, target_names: list[str]) -> 
         raise
 
     return extracted_paths
-

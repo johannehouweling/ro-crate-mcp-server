@@ -142,7 +142,7 @@ async def search_index(
         items.append(
             {
                 "crate_id": r.crate_id,
-                "title": r.title,
+                "name": r.name,
                 "description": r.description,
                 "resource_locator": r.resource_locator,
                 "resource_size": r.resource_size,
@@ -150,6 +150,27 @@ async def search_index(
             }
         )
     return {"count": len(items), "results": items}
+
+
+# Compatibility helper used by tests: coroutine that returns indexed crate metadata
+async def get_crate(crate_id: str) -> dict[str, Any]:
+    entry = mcp.state.store.get(crate_id)
+    if entry is None:
+        return {}
+
+    d = entry.dict()
+    # Convert datetime fields to isoformat
+    if "indexed_at" in d and d["indexed_at"] is not None:
+        try:
+            d["indexed_at"] = d["indexed_at"].isoformat()
+        except Exception:
+            d["indexed_at"] = str(d["indexed_at"])
+    if "resource_last_modified" in d and d["resource_last_modified"] is not None:
+        try:
+            d["resource_last_modified"] = d["resource_last_modified"].isoformat()
+        except Exception:
+            d["resource_last_modified"] = str(d["resource_last_modified"])
+    return d
 
 
 @mcp.tool()
@@ -206,7 +227,7 @@ async def get_crate_metadata(crate_id: str) -> dict[str, Any]:
         except Exception:
             d["resource_last_modified"] = str(d["resource_last_modified"])
 
-    return 
+    return d
 
 
 @mcp.resource(uri="rocrate://{crate_id}/metadata")

@@ -21,6 +21,133 @@ from .storage.store import IndexStore
 type json_leaf = str | int | float | bool | None
 
 
+def compute_embedding(text: str) -> list[float]:
+    # deterministic simple hash-based mock embedding for tests
+    h = sum(ord(c) for c in text) % 100
+    return [float((h + i) % 10) / 10.0 for i in range(8)]
+
+
+def get_nested_values(obj: Any, path: list[str]) -> set[json_leaf]:
+    """
+    Traverse a nested JSON-like structure (dicts/lists/primitives)
+    following the given path (list of keys). Returns a set of
+    primitive leaf values.
+    """
+    if not path:
+        if isinstance(obj, (str, int, float, bool)) or obj is None:
+            return {obj}
+        return set()
+
+    key, *rest = path
+    results: set[json_leaf] = set()
+
+    if isinstance(obj, dict):
+        if key not in obj:
+            return set()
+        return get_nested_values(obj[key], rest)
+
+    if isinstance(obj, list):
+        for item in obj:
+            results |= get_nested_values(item, path)
+        return results
+
+    # primitive but still path left
+    return set()
+
+
+def extract_fields(
+    roc: ROCrate,
+    selections: list[str],
+) -> dict[str, set[json_leaf] | list[dict[str, Any]]]:
+    """
+    Extract fields from an ROCrate JSON-LD graph.
+
+    selections examples:
+        - "Person"                      -> full table of Person entities
+        - "Person.name"                 -> names of Persons
+        - "Person.affiliation.name"     -> nested traversal
+        - "Dataset.license.@id"         -> license ids for datasets
+
+    Semantics:
+        * The part before the first '.' is treated as @type
+            for roc.get_by_type(type_name).
+
+        * If there is no '.' (i.e. only "Type"), we return
+            a *table* of full JSON-LD rows:
+            key: "Person" -> list[dict[str, Any]]
+
+        * If there is a path following the type, we return
+            a set of deduplicated primitive values:
+            key: "Person.name" -> set[json_leaf]
+    """
+    extracted: dict[str, set[json_leaf] | list[dict[str, Any]]] = {}
+
+    for selection in selections:
+        selection = selection.strip()
+        if not selection:
+            continue
+
+        parts = selection.split(".")
+        type_name = parts[0]
+        field_parts = parts[1:]  # may be empty
+
+        if not type_name:
+            continue
+
+        entities = roc.get_by_type(type_name)
+        if entities is None:
+            continue
+
+        if isinstance(entities, Iterable) and not isinstance(entities, (str, bytes)):
+            entity_iter = entities
+        else:
+            entity_iter = [entities]
+
+        # mode 1: full table for this type ("Person")
+        if not field_parts:
+            rows: list[dict[str, Any]] = extracted.get(  # type: ignore[assignment]
+                selection, []
+            )  # reuse if already started from earlier crates
+
+            # make sure rows is actually a list
+            if not isinstance(rows, list):
+                rows = []
+
+            for entity in entity_iter:
+                data = entity.as_jsonld() if hasattr(entity, "as_jsonld") else entity
+                if isinstance(data, dict):
+                    rows.append(data)
+
+            extracted[selection] = rows
+            continue
+
+        # mode 2: nested field values ("Person.name", etc.)
+        value_set: set[json_leaf] = set()
+
+        for entity in entity_iter:
+            data = entity.as_jsonld() if hasattr(entity, "as_jsonld") else entity
+            values = get_nested_values(data, field_parts)
+            if values:
+                value_set.update(values)
+
+        if not value_set:
+            continue
+
+        current = extracted.get(selection)
+        if current is None:
+            extracted[selection] = value_set
+        else:
+            # merge with existing set if there is one
+            if isinstance(current, set):
+                current.update(value_set)
+            else:
+                # if existing is a list (should not happen here),
+                # we just overwrite to keep types consistent.
+                extracted[selection] = value_set
+
+    return extracted
+
+
 class Indexer:
     def __init__(
         self,
@@ -72,6 +199,8 @@ class Indexer:
                     roc_json_paths = extract_files_from_zip_stream(
                         stream, ["ro-crate-metadata.json", "ro-crate-metadata.jsonld"]
                     )
+                    # debug
+                    print("[indexer] extracted paths:", roc_json_paths)
                     # If the extractor didn't find a metadata file, skip
                     if not roc_json_paths:
                         try:
@@ -89,163 +218,45 @@ class Indexer:
                     try:
                         roc = ROCrate(roc_dummy_path)
                     except Exception:
-                        roc = None
-
-                    def compute_embedding(text: str) -> list[float]:
-                        # deterministic simple hash-based mock embedding for tests
-                        h = sum(ord(c) for c in text) % 100
-                        return [float((h + i) % 10) / 10.0 for i in range(8)]
-
-                    def get_nested_values(obj: Any, path: list[str]) -> set[json_leaf]:
-                        """
-                        Traverse a nested JSON-like structure (dicts/lists/primitives)
-                        following the given path (list of keys). Returns a set of
-                        primitive leaf values.
-                        """
-                        if not path:
-                            if isinstance(obj, (str, int, float, bool)) or obj is None:
-                                return {obj}
-                            return set()
-
-                        key, *rest = path
-                        results: set[json_leaf] = set()
-
-                        if isinstance(obj, dict):
-                            if key not in obj:
-                                return set()
-                            return get_nested_values(obj[key], rest)
-
-                        if isinstance(obj, list):
-                            for item in obj:
-                                results |= get_nested_values(item, path)
-                            return results
-
-                        # primitive but still path left
-                        return set()
-
-                    def extract_fields(
-                        roc: ROCrate,
-                        selections: list[str],
-                    ) -> dict[str, set[json_leaf] | list[dict[str, Any]]]:
-                        """
-                        Extract fields from an ROCrate JSON-LD graph.
-
-                        selections examples:
-                            - "Person"                      -> full table of Person entities
-                            - "Person.name"                 -> names of Persons
-                            - "Person.affiliation.name"     -> nested traversal
-                            - "Dataset.license.@id"         -> license ids for datasets
-
-                        Semantics:
-                            * The part before the first '.' is treated as @type
-                              for roc.get_by_type(type_name).
-
-                            * If there is no '.' (i.e. only "Type"), we return
-                              a *table* of full JSON-LD rows:
-                                key: "Person" -> list[dict[str, Any]]
-
-                            * If there is a path following the type, we return
-                              a set of deduplicated primitive values:
-                                key: "Person.name" -> set[json_leaf]
-                        """
-                        extracted: dict[str, set[json_leaf] | list[dict[str, Any]]] = {}
-
-                        for selection in selections:
-                            selection = selection.strip()
-                            if not selection:
-                                continue
-
-                            parts = selection.split(".")
-                            type_name = parts[0]
-                            field_parts = parts[1:]  # may be empty
-
-                            if not type_name:
-                                continue
-
-                            entities = roc.get_by_type(type_name)
-                            if entities is None:
-                                continue
-
-                            if isinstance(entities, Iterable) and not isinstance(
-                                entities, (str, bytes)
-                            ):
-                                entity_iter = entities
-                            else:
-                                entity_iter = [entities]
-
-                            # mode 1: full table for this type ("Person")
-                            if not field_parts:
-                                rows: list[dict[str, Any]] = extracted.get(  # type: ignore[assignment]
-                                    selection, []
-                                )  # reuse if already started from earlier crates
-
-                                # make sure rows is actually a list
-                                if not isinstance(rows, list):
-                                    rows = []
-
-                                for entity in entity_iter:
-                                    data = (
-                                        entity.as_jsonld()
-                                        if hasattr(entity, "as_jsonld")
-                                        else entity
-                                    )
-                                    if isinstance(data, dict):
-                                        rows.append(data)
-
-                                extracted[selection] = rows
-                                continue
-
-                            # mode 2: nested field values ("Person.name", etc.)
-                            value_set: set[json_leaf] = set()
-
-                            for entity in entity_iter:
-                                data = (
-                                    entity.as_jsonld() if hasattr(entity, "as_jsonld") else entity
-                                )
-                                values = get_nested_values(data, field_parts)
-                                if values:
-                                    value_set.update(values)
-
-                            if not value_set:
-                                continue
-
-                            current = extracted.get(selection)
-                            if current is None:
-                                extracted[selection] = value_set
-                            else:
-                                # merge with existing set if there is one
-                                if isinstance(current, set):
-                                    current.update(value_set)
-                                else:
-                                    # if existing is a list (should not happen here),
-                                    # we just overwrite to keep types consistent.
-                                    extracted[selection] = value_set
-
-                        return extracted
+                        return None
 
                     # Parse metadata JSON-LD file directly (preferred for basic fields)
-
                     extracted_fields = extract_fields(roc, roc_type_or_fields_to_index)
 
+                    # Derive human-friendly title/description to build embeddings
+
+                    # Construct ORM IndexEntry mapped object
                     entry = IndexEntry(
-                        crate_id=roc.get("@id") or res.locator,
-                        name=roc.name,
-                        description=roc.description,
-                        license=roc.root_dataset.get("license"),
-                        datepublished=[
+                        crate_id=(
+                            roc.root_dataset.get("@id") if getattr(roc, "root_dataset", None) else None
+                        ) or res.locator,
+                        name=(getattr(roc, "name", None) or []) if roc is not None else [],
+                        description=(getattr(roc, "description", None) or []) if roc is not None else [],
+                        license=(
+                            roc.root_dataset.get("license")
+                            if getattr(roc, "root_dataset", None)
+                            else None
+                        ),
+                        date_published=[
                             datetime.datetime.fromisoformat(a)
-                            for a in roc.root_dataset["datePublished"]
+                            for a in (
+                                roc.root_dataset.get("datePublished", [])
+                                if getattr(roc, "root_dataset", None)
+                                else []
+                            )
                         ],
                         resource_locator=res.locator,
                         resource_size=res.size,
                         resource_last_modified=res.last_modified,
                         metadata_path="ro-crate-metadata.json",
-                        top_level_metadata={
-                            k: v for k, v in roc.metadata.__dict__.items() if k not in ["crate"]
-                        },
+                        top_level_metadata=roc.metadata.as_jsonld()
+                        if getattr(roc, "metadata", None)
+                        else {},
                         extracted_fields=extracted_fields,
-                        embedding=compute_embedding(description or title),
-                        indexed_at=datetime.datetime.now(datetime.timezone.utc),
+                        embedding=compute_embedding(
+                            " ".join(roc.name + roc.description) if roc else ""
+                        ),
+                        indexed_at=datetime.datetime.now(datetime.UTC).isoformat(),
                     )
 
                     # cleanup temporary extracted folder
@@ -264,6 +275,7 @@ class Indexer:
 
                 entry = await loop.run_in_executor(None, read_and_parse)
                 if entry is not None:
+                    print("[indexer] inserting entry:", getattr(entry, "crate_id", None))
                     self.store.insert(entry)
 
         for res in self.backend.list_resources():
