@@ -230,6 +230,7 @@ class Indexer:
                         crate_id=uuid.uuid4().hex,
                         name=" ".join(roc.name) if getattr(roc, "name", None) else "",
                         description=" ".join(roc.description) if roc is not None else "",
+                        combined_text=" ".join(roc.name + roc.description) if roc else "", 
                         license=" ".join(roc.root_dataset.get("license", [])),
                         date_published=datetime.datetime.fromisoformat(roc.root_dataset.get("datePublished", [])[0]),
                         resource_locator=res.locator,
@@ -267,7 +268,7 @@ class Indexer:
                 if entry is not None:
                     print("[indexer] inserting entry:", getattr(entry, "crate_id", None))
                     try:
-                        self.store.insert(entry)
+                        await self.store.insert(entry)
                     except Exception as e:
                         print("[indexer] store.insert raised:", e)
                         raise

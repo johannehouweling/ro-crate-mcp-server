@@ -18,6 +18,7 @@ dependencies = [
     "rdflib>=7.0.0",
     "rdflib-sqlalchemy>=0.5.3",
     "sqlalchemy>=2.0.44",
+    "aiosqlite>=0.21.0",
 ]
 
 [build-system]

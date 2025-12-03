@@ -18,6 +18,7 @@ class IndexEntry(Base):
     # lists and complex fields are stored as JSON
     name = Column(Text)
     description = Column(Text)
+    combined_text = Column(Text)
     date_published = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
     license = Column(Text)
     resource_locator = Column(Text)
@@ -32,6 +33,7 @@ class IndexEntry(Base):
     indexed_at = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
     validation_status = Column(Text)
     embedding = Column(JSON)
+            
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable representation of the entry."""
@@ -39,6 +41,7 @@ class IndexEntry(Base):
             "crate_id": self.crate_id,
             "name": self.name or "",
             "description": self.description or "",
+            "combined_text": self.combined_text or "",
             "date_published": self.date_published or None,
             "license": self.license or "",
             "resource_locator": self.resource_locator,
