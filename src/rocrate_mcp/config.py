@@ -34,10 +34,13 @@ class Settings(BaseSettings):
     # accept possible raw env var key that may appear in some environments
     roc_mcp_fields_to_index: str | None = None
 
-    # Embeddings / semantic search placeholders
-    embeddings_provider: str | None = None
+    # Embeddings / semantic search placeholder
+    embeddings_provider: str = "local" # 'local' | 'openai' | 'none'
     embeddings_api_key: SecretStr | None = None
-
+    embeddings_model_name: str = None
+    embeddings_chunk_token_size: int = 256  # max chars per chunk
+    embeddings_chunk_overlap: int = 20 # overlapping chars between chunks
+    
     # Limits
     max_list_limit: int = 1000  # configurable server-side max for paged listing
     # Maximum allowed download size for a crate (in megabytes). If a requested download

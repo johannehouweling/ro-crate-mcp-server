@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
+
+from rocrate_mcp.utils.zip_reader import extract_files_from_zip_stream
 
 from .base import ResourceInfo, StorageBackend
 
@@ -26,24 +28,32 @@ class FilesystemStorageBackend(StorageBackend):
         - Path traversal is prevented by resolving absolute paths and ensuring they
           remain inside the configured root directory.
     """
-    def __init__(self, root_dir: str|Path, root_prefix: None|str|Path = None, default_suffixes: list[str]|None = None):
+
+    def __init__(
+        self,
+        root_dir: str | Path,
+        root_prefix: None | str | Path = None,
+        default_suffixes: list[str] | None = None,
+    ):
         # store resolved Path for the root directory
         self.root_dir: Path = Path(root_dir).resolve()
         # normalize root_prefix to a string without leading separators
-        rp = (root_prefix or "")
+        rp = root_prefix or ""
         if isinstance(rp, Path):
             rp = rp.as_posix()
         self.root_prefix = str(rp).lstrip("/\\")
 
         # default_suffixes: None means use no default, otherwise a list (may be empty)
         if default_suffixes is None:
-            self.default_suffixes: list[str]|None = ['.zip']
+            self.default_suffixes: list[str] | None = [".zip"]
         else:
-            self.default_suffixes = [(s if s.startswith('.') else f'.{s}') for s in default_suffixes]
+            self.default_suffixes = [
+                (s if s.startswith(".") else f".{s}") for s in default_suffixes
+            ]
 
         self.root_dir.mkdir(parents=True, exist_ok=True)
 
-    def _resolve(self, relative: str|Path) -> Path:
+    def _resolve(self, relative: str | Path) -> Path:
         """Resolve a relative locator (may include nested subdirs) to an absolute Path
         under self.root_dir + self.root_prefix. Raises FileNotFoundError on unsafe locators.
         """
@@ -58,7 +68,9 @@ class FilesystemStorageBackend(StorageBackend):
 
         return full
 
-    def list_resources(self, prefix: str|None = None, suffixes: list[str]|None = None) -> Iterator[ResourceInfo]:
+    def list_resources(
+        self, prefix: str | None = None, suffixes: list[str] | None = None
+    ) -> Iterator[ResourceInfo]:
         """
         List resources under the optional prefix. The prefix is interpreted as a
         relative path under the configured root_prefix (if any). By default this
@@ -73,7 +85,7 @@ class FilesystemStorageBackend(StorageBackend):
         elif len(suffixes) == 0:
             suffixes = None
         else:
-            suffixes = [(s if s.startswith('.') else f'.{s}') for s in suffixes]
+            suffixes = [(s if s.startswith(".") else f".{s}") for s in suffixes]
 
         try:
             start = self._resolve(prefix or "")
@@ -123,7 +135,7 @@ class FilesystemStorageBackend(StorageBackend):
                 mtime = None
             yield ResourceInfo(locator=rel, size=size, last_modified=mtime)
 
-    def get_resource_stream(self, locator: str|Path) -> Any:
+    def get_resource_stream(self, locator: str | Path) -> Any:
         """
         Return a readable binary stream for the resource identified by locator.
         The caller is responsible for closing the returned file-like object.
@@ -134,3 +146,25 @@ class FilesystemStorageBackend(StorageBackend):
         if not full.is_file():
             raise FileNotFoundError(locator)
         return full.open("rb")
+
+    def get_extracted_file_paths(
+        self, locator: str | Path, filenames_to_extract: Sequence[str] = ("ro-crate-metadata.json",)
+    ) -> list[Path] |None:
+        """
+        Return a pathlib.Path pointing to the JSON file identified by locator.
+
+        Raises FileNotFoundError if the locator is invalid or the file does not exist.
+        """
+        stream = self.get_resource_stream(locator)
+        roc_json_paths = extract_files_from_zip_stream(
+            stream, list(filenames_to_extract)
+        )
+        # look for canonical ro-crate metadata filenames (json and jsonld)
+        if not roc_json_paths:
+            try:
+                if hasattr(stream, "close"):
+                    stream.close()
+            except Exception:
+                pass
+            return None
+        return roc_json_paths

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import hashlib
-import shutil
 import uuid
 from collections.abc import Iterable
 from typing import Any
@@ -12,7 +11,7 @@ from rocrate.rocrate import ROCrate
 
 from ..models import IndexEntry
 from ..rocrate_storage.base import ResourceInfo, StorageBackend
-from ..utils.zip_reader import extract_files_from_zip_stream
+from .embeddings import get_embeddings
 from .storage.store import IndexStore
 
 # assuming these types exist in your codebase
@@ -194,22 +193,12 @@ class Indexer:
             async with sem:
 
                 def read_and_parse() -> IndexEntry | None:
-                    stream = self.backend.get_resource_stream(res.locator)
-
-                    # look for canonical ro-crate metadata filenames (json and jsonld)
-                    roc_json_paths = extract_files_from_zip_stream(
-                        stream, ["ro-crate-metadata.json", "ro-crate-metadata.jsonld"]
-                    )
+                    roc_json_paths = self.backend.get_extracted_file_paths(res.locator)
+                    if roc_json_paths is None:
+                        return None
                     # debug
                     print("[indexer] extracted paths:", roc_json_paths)
                     # If the extractor didn't find a metadata file, skip
-                    if not roc_json_paths:
-                        try:
-                            if hasattr(stream, "close"):
-                                stream.close()
-                        except Exception:
-                            pass
-                        return None
 
                     # roc_meta_path is the temp folder containing ro-crate-metadata.json
                     roc_meta_path = roc_json_paths[0]
@@ -230,7 +219,6 @@ class Indexer:
                         crate_id=uuid.uuid4().hex,
                         name=" ".join(roc.name) if getattr(roc, "name", None) else "",
                         description=" ".join(roc.description) if roc is not None else "",
-                        combined_text=" ".join(roc.name + roc.description) if roc else "", 
                         license=" ".join(roc.root_dataset.get("license", [])),
                         date_published=datetime.datetime.fromisoformat(roc.root_dataset.get("datePublished", [])[0]),
                         resource_locator=res.locator,
@@ -242,30 +230,21 @@ class Indexer:
                         if getattr(roc, "metadata", None)
                         else {},
                         extracted_fields=extracted_fields,
-                        embedding=compute_embedding(
-                            " ".join(roc.name + roc.description) if roc else ""
-                        ),
+                        embeddings=[[]], # will be filled later
                         indexed_at=datetime.datetime.now(datetime.UTC),
                     )
-
+                    text_to_embed = f"{roc.name}\n{roc.description}"
                     # cleanup temporary extracted folder
-                    try:
-                        shutil.rmtree(roc_meta_path.parent)
-                    except Exception:
-                        pass
+                    [path.unlink(missing_ok=True) for path in roc_json_paths]
 
-                    try:
-                        if hasattr(stream, "close"):
-                            stream.close()
-                    except Exception:
-                        pass
-
-                    return entry
+                    return entry, text_to_embed
 
                 print("[indexer] submitting read_and_parse to executor for", res.locator)
-                entry = await loop.run_in_executor(None, read_and_parse)
+                entry, text_to_embedd = await loop.run_in_executor(None, read_and_parse)
                 print("[indexer] read_and_parse returned:", entry)
                 if entry is not None:
+                    if text_to_embedd:
+                        entry.embeddings = await get_embeddings(text_to_embedd)
                     print("[indexer] inserting entry:", getattr(entry, "crate_id", None))
                     try:
                         await self.store.insert(entry)

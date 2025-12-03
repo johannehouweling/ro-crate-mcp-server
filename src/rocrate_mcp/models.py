@@ -18,7 +18,6 @@ class IndexEntry(Base):
     # lists and complex fields are stored as JSON
     name = Column(Text)
     description = Column(Text)
-    combined_text = Column(Text)
     date_published = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
     license = Column(Text)
     resource_locator = Column(Text)
@@ -27,13 +26,16 @@ class IndexEntry(Base):
     metadata_path = Column(Text)
     top_level_metadata = Column(JSON)
     extracted_fields = Column(JSON)
-    checksum_metadata_json = Column(Text)
+    checksum_metadata_json = Column(String(64), unique=True, nullable=False)
     version = Column(Text)
     storage_backend_id = Column(Text)
     indexed_at = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
     validation_status = Column(Text)
-    embedding = Column(JSON)
-            
+    embeddings = Column(JSON)
+    
+    __table_args__ = (
+        UniqueConstraint("checksum_metadata_json", name="uq_entries_checksum"),
+    )   
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable representation of the entry."""
@@ -41,7 +43,6 @@ class IndexEntry(Base):
             "crate_id": self.crate_id,
             "name": self.name or "",
             "description": self.description or "",
-            "combined_text": self.combined_text or "",
             "date_published": self.date_published or None,
             "license": self.license or "",
             "resource_locator": self.resource_locator,
@@ -55,10 +56,25 @@ class IndexEntry(Base):
             "storage_backend_id": self.storage_backend_id,
             "indexed_at": self.indexed_at,
             "validation_status": self.validation_status,
-            "embedding": self.embedding,
+            "embeddings": self.embeddings,
         }
         return d
 
+    @property
+    def combined_text(self) -> str:
+        """Return a combined text representation for FTS indexing."""
+        parts = [
+            self.name or "",
+            self.description or "",
+        ]
+        # Include extracted fields as well
+        if self.extracted_fields:
+            for value in self.extracted_fields.values():
+                if isinstance(value, str):
+                    parts.append(value)
+                elif isinstance(value, list):
+                    parts.extend(str(v) for v in value if isinstance(v, str))
+        return " ".join(parts)
 
 # Materialized entity tables for fast property queries
 class EntityGlobal(Base):

@@ -8,8 +8,6 @@ license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "rocrate>=0.9.0",
-    "fastapi>=0.110.0",
-    "uvicorn>=0.29.0",
     "azure-storage-blob>=12.14.0",
     "python-dotenv>=1.0.0",
     "numpy>=2.2.6",
@@ -45,7 +43,12 @@ dev = [
     "pytest-cov",
     "pytest-asyncio",
     "tox",
-    "ruff",          # fast linter/formatter
-    "mypy",          # type checks
+    "ruff", # fast linter/formatter
+    "mypy", # type checks
     "ipykernel>=7.1.0",
+    "ipywidgets>=8.1.8",
+]
+embeddings = [
+    "hf-xet>=1.2.0",
+    "sentence-transformers>=5.1.2",
 ]
