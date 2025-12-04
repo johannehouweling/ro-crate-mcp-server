@@ -1,90 +1,144 @@
-# ro-crate-mcp-server
+ro-crate-mcp-server
+=============
 
-[![version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://img.shields.io/badge/version-0.1.0-blue.svg) [![python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/) [![build](https://img.shields.io/badge/build-unknown-lightgrey.svg)](https://github.com/)
+[![version](https://img.shields.io/badge/version-0.1.1-blue.svg)](https://img.shields.io/badge/version-0.1.1-blue.svg) [![python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/) [![build](https://img.shields.io/badge/build-unknown-lightgrey.svg)](https://github.com/)
 
-MCP server for RO-crates
+MCP server for indexing and querying RO-crates.
 
-Overview
 --------
-This project implements a small MCP (Model Context Protocol) server that indexes RO-Crate zip archives by reading the embedded JSON-LD metadata file (typically named `ro-crate-metadata.json` or `ro-crate.json`) without unpacking the entire archive. The server exposes a FastAPI-based HTTP API to list, search, and fetch crate metadata.
 
-Development / Quickstart
-----------
+This repository provides a FastMCP-based server exposing tools to list and inspect indexed RO-crates, perform semantic search (optional), and list storage resources from pluggable backends (filesystem or Azure Blob Storage). The server is configured via a pydantic Settings class that reads environment variables prefixed with ROC_MCP_. See src/rocrate_mcp/config.py for the authoritative mapping.
 
-Development (recommended)
+Highlights
+- FastMCP-based server (use `mcp` CLI for development and invocation)
+- Pluggable storage backends: filesystem, azure, or none (in-memory/skippable)
+- SQLite FTS-backed index (SqliteFTSIndexStore) for fast text search
+- Tools exposed via MCP: list_all_indexed_crates, semantic_search, get_crate_metadata, storage_list_resources
 
-1. Install build & development dependencies using uv (reads pyproject.toml):
+Requirements
+- Python >= 3.12
+- Recommended dependencies are declared in pyproject.toml. Important packages include:
+  - mcp[cli] (FastMCP CLI)
+  - rocrate
+  - rdflib, sqlalchemy, aiosqlite
+  - azure-storage-blob (optional, for Azure backend)
 
-   uv install
+Installation
 
-2. Install in editable mode for development:
+Clone and install editable (development) environment:
 
-   pip install -e .[dev]
+    git clone <repo-url>
+    cd ro-crate-mcp-server
+    python -m pip install -e .[dev]
 
-Install as a package (normal)
+Or install the package for normal usage:
 
-If you want to install the package normally (when published to PyPI) run:
+    python -m pip install .
 
-    pip install rocrate-mcp
+Development quickstart
 
-Note: this package is not published to PyPI yet. To install from the local source tree use:
+1) Configure environment
 
-    pip install .
+Copy the example env file and edit values as needed:
 
-Next steps (common)
+    cp src/rocrate_mcp/.env.example .env
 
-1. Copy `.env.example` to `.env` and set the ROC_MCP_AZURE_CONNECTION_STRING and ROC_MCP_AZURE_CONTAINER environment variables if using Azure blob storage (or set ROC_MCP_BACKEND=filesystem and ROC_MCP_FILESYSTEM_ROOT for filesystem).
+The server reads environment variables with the ROC_MCP_ prefix (see Configuration below).
 
-2. Run the server locally:
+2) Run development server with MCP
 
-   uv run uvicorn rocrate_mcp.main:app --reload --port 8000
+The recommended development flow is to use the mcp CLI which understands the FastMCP lifespan and tooling:
 
-3. Endpoints (all prefixed with /api/v1):
-   - GET /api/v1/health — health check
-   - POST /api/v1/search — search indexed crates (body: SearchFilter)
-   - GET /api/v1/crate/{crate_id} — fetch a crate's indexed metadata
-   - GET /api/v1/search/by-entity — find crate ids by entity property
+    # Run the app in development mode (auto-reload, lifecycle invoked)
+    mcp dev
+
+You can also run the server directly (production/one-off):
+
+    python -m rocrate_mcp.main
+
+Configuration (environment variables)
+
+All runtime configuration is provided via pydantic-settings Settings and environment variables with prefix ROC_MCP_. The authoritative names are defined in src/rocrate_mcp/config.py; the most commonly used variables are:
+
+- ROC_MCP_INDEX_MODE: 'eager' | other (default: eager) — controls whether the index is built during server lifespan startup
+- ROC_MCP_STORAGE_BACKEND: 'sqlite+fts' | 'rdflib' — internal index storage selection
+- ROC_MCP_BACKEND: 'filesystem' | 'azure' | 'none' — select which crate storage backend to use
+- ROC_MCP_FILESYSTEM_ROOT: Path for filesystem backend root (required when BACKEND=filesystem)
+- ROC_MCP_FILESYSTEM_ROOT_PREFIX: Optional prefix for filesystem locations
+- ROC_MCP_FILESYSTEM_DEFAULT_SUFFIXES: Comma-separated suffixes (default: .zip)
+- ROC_MCP_AZURE_CONNECTION_STRING: Azure connection string (required when BACKEND=azure)
+- ROC_MCP_AZURE_CONTAINER: Azure container name (required when BACKEND=azure)
+- ROC_MCP_INDEXED_DB_PATH: Path to the sqlite index DB file (defaults to rocrate_index.sqlite)
+- ROC_MCP_FIELDS_TO_INDEX: Comma-separated list of fields from ro-crate to index (see Settings.get_fields_to_index())
+- ROC_MCP_EMBEDDINGS_PROVIDER: 'local' | 'openai' | 'none' (controls semantic embeddings provider)
+- ROC_MCP_EMBEDDINGS_API_KEY: API key for external embedding providers (kept as SecretStr)
+
+Note: Some historical/alternate env names are tolerated by the Settings class (e.g. ROC_MCP_ROC_FIELDS_TO_INDEX or ROC_MCP_ROC_MCP_FIELDS_TO_INDEX) — see src/rocrate_mcp/config.py for details.
 
 Storage backends
-----------------
-This project currently supports two storage backends. Selection is controlled by ROC_MCP_BACKEND (filesystem | azure | none).
 
-- Filesystem (local): a simple local filesystem backend implemented in `src/rocrate_mcp/rocrate_storage/filesystem.py`. Configure with:
-  - ROC_MCP_BACKEND=filesystem
-  - ROC_MCP_FILESYSTEM_ROOT — path to the root directory containing RO-Crate zip files
-  - ROC_MCP_FILESYSTEM_ROOT_PREFIX — optional logical prefix inside the root
-  - ROC_MCP_FILESYSTEM_DEFAULT_SUFFIXES — comma-separated suffixes (e.g. .zip)
+Filesystem backend (local directory)
 
-- Azure Blob Storage: an Azure-backed backend implemented in `src/rocrate_mcp/rocrate_storage/azure_blob.py`. Configure with:
-  - ROC_MCP_BACKEND=azure
-  - ROC_MCP_AZURE_CONNECTION_STRING — Azure connection string
-  - ROC_MCP_AZURE_CONTAINER — Azure container name
+Example .env settings for filesystem backend:
 
-Configuration
--------------
-Configuration is available via environment variables with prefix ROC_MCP_. See `src/rocrate_mcp/config.py` for keys. Common options include:
+    ROC_MCP_BACKEND=filesystem
+    ROC_MCP_FILESYSTEM_ROOT=C:/data/ro-crates
+    ROC_MCP_FILESYSTEM_DEFAULT_SUFFIXES=.zip,.tar.gz
 
-- ROC_MCP_INDEX_MODE: eager (default) or hybrid
-- ROC_MCP_INDEXED_DB_PATH: optional sqlite file for index persistence (recommended for production)
-- ROC_MCP_BACKEND: filesystem | azure | none
-- ROC_MCP_FILESYSTEM_ROOT / ROC_MCP_FILESYSTEM_ROOT_PREFIX / ROC_MCP_FILESYSTEM_DEFAULT_SUFFIXES (when using filesystem backend)
-- ROC_MCP_AZURE_CONNECTION_STRING / ROC_MCP_AZURE_CONTAINER (when using azure backend)
-- ROC_MCP_FIELDS_TO_INDEX (or legacy ROC_MCP_ROC_FIELDS_TO_INDEX) — comma-separated fields to index
-- ROC_MCP_EMBEDDINGS_PROVIDER / ROC_MCP_EMBEDDINGS_API_KEY — placeholders for embedding provider configuration
+Azure Blob Storage backend
 
-Design notes
-------------
-- Default indexing strategy is eager (full scan at startup). A hybrid mode is supported conceptually (lightweight listing + lazy metadata fetch) but not yet fully implemented.
-- The code uses a pluggable StorageBackend protocol so additional backends (S3, filesystem) can be added without changing index semantics.
-- The canonical index store is the sqlite-backed `SqliteFTSIndexStore`; the package exposes it via `rocrate_mcp.index.storage.store.IndexStore`.
-- The API router is mounted under the `/api/v1` prefix (see `src/rocrate_mcp/main.py`).
+Example .env settings for Azure:
+
+    ROC_MCP_BACKEND=azure
+    ROC_MCP_AZURE_CONNECTION_STRING=<your-azure-connection-string>
+    ROC_MCP_AZURE_CONTAINER=<container-name>
+
+If ROC_MCP_BACKEND is not set (or set to 'none'), the server will not wire a storage backend — useful for testing non-storage features.
+
+MCP Tools / API
+
+This project exposes a small set of tooling via FastMCP. The tools are registered in src/rocrate_mcp/tools.py and can be invoked using the `mcp` CLI once the server is running (or with the `mcp call` command against the package when appropriate).
+
+Available tools (high level)
+- list_all_indexed_crates(limit: int = 100, offset: int = 0)
+  Returns paged list of indexed crate IDs and some metadata.
+
+- semantic_search(query: str)
+  Performs semantic search over the indexed content (requires embeddings provider configured).
+
+- get_crate_metadata(crate_id: str)
+  Returns the top-level ro-crate-metadata.json for a given crate (convenience endpoint).
+
+- storage_list_resources(prefix: str | None = None, suffixes: list[str] | None = (".zip",), limit: int = 100, offset: int = 0)
+  Lists raw resources from the configured storage backend.
+
+Example mcp CLI usage (after starting the server with `mcp dev`):
+
+    mcp call rocrate-mcp.list_all_indexed_crates --args '{"limit":10}'
+    mcp call rocrate-mcp.get_crate_metadata --args '{"crate_id":"some-crate-id"}'
+    mcp call rocrate-mcp.storage_list_resources --args '{"prefix":"2025/","limit":50}'
 
 Testing
--------
-Run tests with:
 
-    pytest
+Run tests with pytest (dev extras required):
 
-Licensing
----------
-MIT
+    python -m pip install -e .[dev]
+    pytest -q
+
+You can execute a single test module:
+
+    pytest tests/test_zip_utils.py -q
+
+Note: Integration tests requiring Azure or other external services may need additional env configuration and are not covered by the default test suite.
+
+Contributing
+
+- Use conventional commit messages. The preferred commit message for this change was:
+
+    docs(readme): rewrite README for FastMCP usage
+
+- Keep README and pyproject metadata in sync. If you add env-driven features, update src/rocrate_mcp/.env.example and this README.
+
+License
+
+This project is MIT licensed. See the LICENSE file for details.
