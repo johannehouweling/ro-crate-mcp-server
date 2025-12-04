@@ -34,23 +34,32 @@ def chunk_text_by_tokens(
 
 
 async def get_embeddings(
-    input: str, max_tokens: int | None = settings.embeddings_chunk_token_size, overlap: int= settings.embeddings_chunk_overlap
-) -> list[list[float]] :
+    input: str,
+    max_tokens: int | None = settings.embeddings_chunk_token_size,
+    overlap: int = settings.embeddings_chunk_overlap,
+    prompt_name: str | None = None,
+) -> list[list[float]]:
     """Generate embeddings for the given input text using the configured provider."""
     if settings.embeddings_provider == "openai":
         NotImplementedError("OpenAI embeddings not implemented yet")
     elif settings.embeddings_provider == "local":
-        return await sentencetransformer_embeddings(input,max_tokens=max_tokens,overlap=overlap)
+        return await sentencetransformer_embeddings(
+            input, max_tokens=max_tokens, overlap=overlap, prompt_name=prompt_name
+        )
     else:
         return [[]]
 
 
-async def sentencetransformer_embeddings(input: str, max_tokens:int, overlap:int) -> list[list[float]]:
+async def sentencetransformer_embeddings(
+    input: str, max_tokens: int | None = None, overlap: int = 20, prompt_name: str | None = None
+) -> list[list[float]]:
     """Generate embeddings using SentenceTransformer."""
     model = get_model()
     chunks = chunk_text_by_tokens(input, model, max_tokens=max_tokens, overlap=overlap)
-    embeddings_list:list[list[float]] = []
+    embeddings_list: list[list[float]] = []
     for chunk in chunks:
-        emb = await asyncio.to_thread(model.encode, chunk)
+        emb = await asyncio.to_thread(
+            model.encode, chunk, prompt_name=prompt_name, normalize_embeddings=True
+        )
         embeddings_list.append(emb.tolist())
     return embeddings_list

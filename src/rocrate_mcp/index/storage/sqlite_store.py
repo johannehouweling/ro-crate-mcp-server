@@ -8,8 +8,8 @@ from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from sqlalchemy import select, text
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -17,6 +17,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from rocrate_mcp.index.embeddings import get_embeddings
+
+from ...config import Settings
 from ...models import (
     Base as ORMBase,
 )
@@ -28,9 +31,10 @@ from ...models import (
     SearchFilter,
 )
 
+settings = Settings()
+
 logger = logging.getLogger(__name__)
 Base = ORMBase
-Entry = IndexEntry
 
 
 class SqliteFTSIndexStore:
@@ -213,25 +217,25 @@ class SqliteFTSIndexStore:
         session: AsyncSession,
         mapping: dict[str, Any],
         crate_id: str,
-    ) -> Entry:
+    ) -> IndexEntry:
         """Upsert a single entry in an existing session, using checksum first, then crate_id."""
         checksum = mapping.get("checksum_metadata_json")
-        obj: Entry | None = None
+        obj: IndexEntry | None = None
 
         # 1) Try to find by checksum if available
         if checksum:
             res = await session.execute(
-                select(Entry).where(Entry.checksum_metadata_json == checksum)
+                select(IndexEntry).where(IndexEntry.checksum_metadata_json == checksum)
             )
             obj = res.scalars().first()
 
         # 2) If not found, fall back to primary key (crate_id)
         if obj is None:
-            obj = await session.get(Entry, crate_id)
+            obj = await session.get(IndexEntry, crate_id)
 
         # 3) Insert or update
         if obj is None:
-            obj = Entry(**mapping)
+            obj = IndexEntry(**mapping)
             session.add(obj)
         else:
             for k, v in mapping.items():
@@ -254,10 +258,7 @@ class SqliteFTSIndexStore:
                     {"cid": crate_id},
                 )
                 await conn.execute(
-                    text(
-                        "INSERT INTO entries_fts (crate_id, combined_text) "
-                        "VALUES (:cid, :ct)"
-                    ),
+                    text("INSERT INTO entries_fts (crate_id, combined_text) VALUES (:cid, :ct)"),
                     {"cid": crate_id, "ct": combined_text},
                 )
 
@@ -307,9 +308,7 @@ class SqliteFTSIndexStore:
 
         # FTS maintenance
         combined_text = self._make_combined_text(entry)
-        await self._update_fts_for_entries(
-            [(entry.crate_id, combined_text)]
-        )
+        await self._update_fts_for_entries([(entry.crate_id, combined_text)])
 
         # Entity materialization
         await self._materialize_entries([entry])
@@ -342,7 +341,7 @@ class SqliteFTSIndexStore:
 
     async def get(self, crate_id: str) -> IndexEntry | None:
         async with self._Session() as session:
-            orm = await session.get(Entry, crate_id)
+            orm = await session.get(IndexEntry, crate_id)
             if orm is None:
                 return None
             orm.name = orm.name or ""
@@ -359,13 +358,13 @@ class SqliteFTSIndexStore:
     ):
         if order_by is None:
             try:
-                order_by = Entry.indexed_at.desc()
+                order_by = IndexEntry.indexed_at.desc()
             except Exception:
-                order_by = Entry.crate_id
+                order_by = IndexEntry.crate_id
 
         async with self._Session() as session:
             q = (
-                select(Entry)
+                select(IndexEntry)
                 .order_by(order_by)
                 .offset(max(0, int(offset)))
                 .limit(max(1, int(limit)))
@@ -406,7 +405,7 @@ class SqliteFTSIndexStore:
                 candidate_ids = [r[0] for r in cur.fetchall()]
         else:
             async with self._Session() as session:
-                res = await session.execute(select(Entry.crate_id))
+                res = await session.execute(select(IndexEntry.crate_id))
                 candidate_ids = [r[0] for r in res.fetchall()]
 
         results: list[IndexEntry] = []
@@ -448,27 +447,49 @@ class SqliteFTSIndexStore:
         start = filter.offset
         end = start + filter.limit
 
-        if mode == "semantic" and q:
+        return [await self.get(crate_id) for crate_id in candidate_ids[start:end]]
 
-            def compute_embedding(text: str) -> list[float]:
-                h = sum(ord(c) for c in text) % 100
-                return [float((h + i) % 10) / 10.0 for i in range(8)]
+    async def semantic_search(
+        self, query: str, limit: int = 10, offset: int = 0, mode="semantic"
+    ) -> list[str]:
+        """Perform a semantic search over indexed crates using embeddings."""
+        if mode == "semantic" and query and settings.embeddings_provider != "none":
+            from sentence_transformers.util import semantic_search, dot_score
 
-            qvec = compute_embedding(q)
-            candidates = []
-            for e in results:
-                if e.embeddings is None:
-                    continue
-                try:
-                    emb = list(e.embeddings)
-                    score = sum(float(a) * float(b) for a, b in zip(qvec, emb))
-                    candidates.append((e, score))
-                except Exception:
-                    continue
-            candidates.sort(key=lambda x: x[1], reverse=True)
-            return [c[0] for c in candidates[start:end]]
+            query_embeddings = await get_embeddings(query, prompt_name="query")
+            # 2) Load all entries that have embeddings, plus extracted_fields for filtering
+            async with self._Session() as session:
+                res = await session.execute(
+                    select(IndexEntry.crate_id, IndexEntry.embeddings).where(
+                        IndexEntry.embeddings.isnot(None)
+                    )
+                )
+                rows = res.fetchall()
+                print(rows)
+            print(rows)
+            corpus_embeddings = [emb for _, emb in rows][0]
+            crate_ids_per_embedding = [cid for cid, emb in rows for _ in emb]
 
-        return results[start:end]
+            hits_per_query = semantic_search(
+                np.array(query_embeddings), np.array(corpus_embeddings), score_function=dot_score
+            )
+            crate_max_scores: dict[str, float] = {}
+            for q_hits in hits_per_query:
+                for h in q_hits:
+                    idx = h["corpus_id"]
+                    score = h["score"]
+                    cid = crate_ids_per_embedding[idx]
+                    prev = crate_max_scores.get(cid)
+                    if prev is None or score > prev:
+                        crate_max_scores[cid] = score
+
+            ranked_crates = [
+                cid
+                for cid, _ in sorted(crate_max_scores.items(), key=lambda kv: kv[1], reverse=True)
+            ]
+            return ranked_crates
+        else:
+            return ["Semantic search not enabled"]
 
     # ----------------------
     # Convenience query helpers (async)

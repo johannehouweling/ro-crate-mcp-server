@@ -5,6 +5,7 @@ from typing import Any
 from mcp.server.fastmcp import Context
 
 from rocrate_mcp.roc_mcp import mcp
+from rocrate_mcp.models import SearchFilter
 
 
 @mcp.tool()
@@ -39,6 +40,17 @@ async def list_all_indexed_crates(
         "truncated": truncated,
     }
     return {"count": len(page), "crate_ids": page, "meta": meta}
+
+@mcp.tool()
+async def semantic_search(query:str)-> dict[str,Any]:
+    """Perform a semantic search over indexed crates using the given query string."""
+    results = await mcp.state.store.semantic_search(
+        query=query,
+        mode="semantic",
+        limit=10,
+        offset=0,
+    )
+    return dict(results=results)
 
 
 @mcp.tool()
