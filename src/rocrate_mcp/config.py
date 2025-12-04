@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # Embeddings / semantic search placeholder
     embeddings_provider: str = "local" # 'local' | 'openai' | 'none'
     embeddings_api_key: SecretStr | None = None
-    embeddings_model_name: str|None = None
+    embeddings_model_name: str|None = "Qwen/Qwen3-Embedding-0.6B"
     embeddings_chunk_token_size: int = 256  # max chars per chunk
     embeddings_chunk_overlap: int = 20 # overlapping chars between chunks
     

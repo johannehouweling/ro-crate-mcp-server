@@ -9,7 +9,7 @@ if settings.embeddings_provider == "local":
     from sentence_transformers import SentenceTransformer
 
     @lru_cache(maxsize=1)
-    def get_model() -> SentenceTransformer:
+    def get_embedding_model() -> SentenceTransformer:
         """Get or load the SentenceTransformer model and cache it."""
         return SentenceTransformer(settings.embeddings_model_name)
 
@@ -54,7 +54,7 @@ async def sentencetransformer_embeddings(
     input: str, max_tokens: int | None = None, overlap: int = 20, prompt_name: str | None = None
 ) -> list[list[float]]:
     """Generate embeddings using SentenceTransformer."""
-    model = get_model()
+    model = get_embedding_model()
     chunks = chunk_text_by_tokens(input, model, max_tokens=max_tokens, overlap=overlap)
     embeddings_list: list[list[float]] = []
     for chunk in chunks:

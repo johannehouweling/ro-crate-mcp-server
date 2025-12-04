@@ -62,7 +62,7 @@ All runtime configuration is provided via pydantic-settings Settings and environ
 
 - ROC_MCP_INDEX_MODE: 'eager' | other (default: eager) — controls whether the index is built during server lifespan startup
 - ROC_MCP_STORAGE_BACKEND: 'sqlite+fts' | 'rdflib' — internal index storage selection
-- ROC_MCP_BACKEND: 'filesystem' | 'azure' | 'none' — select which crate storage backend to use
+- ROC_MCP_BACKEND: 'filesystem' | 'azure' | 'http' | 'none' — select which crate storage backend to use
 - ROC_MCP_FILESYSTEM_ROOT: Path for filesystem backend root (required when BACKEND=filesystem)
 - ROC_MCP_FILESYSTEM_ROOT_PREFIX: Optional prefix for filesystem locations
 - ROC_MCP_FILESYSTEM_DEFAULT_SUFFIXES: Comma-separated suffixes (default: .zip)
@@ -92,6 +92,18 @@ Example .env settings for Azure:
     ROC_MCP_BACKEND=azure
     ROC_MCP_AZURE_CONNECTION_STRING=<your-azure-connection-string>
     ROC_MCP_AZURE_CONTAINER=<container-name>
+
+HTTP directory-index based backend
+
+The HTTPStorageBackend can be used to index crates exposed via a web server that provides directory-style HTML listings (e.g. Apache or Nginx autoindex). It treats the configured base URL as a root and discovers files and subdirectories by parsing anchor links in listing pages. Downloaded files are streamed and treated similarly to filesystem/azure backends (for example, ZIP archives are extracted to locate ro-crate-metadata.json).
+
+Example .env settings to configure an HTTP backend (the project reads ROC_MCP_ prefixed vars; adapt names to your deployment):
+
+    ROC_MCP_BACKEND=http
+    ROC_MCP_HTTP_BASE_URL=https://example.org/
+    ROC_MCP_HTTP_ROOT_PREFIX=optional/prefix/
+    ROC_MCP_HTTP_DEFAULT_SUFFIXES=.zip,.tar.gz
+    ROC_MCP_HTTP_TIMEOUT=10
 
 If ROC_MCP_BACKEND is not set (or set to 'none'), the server will not wire a storage backend — useful for testing non-storage features.
 
