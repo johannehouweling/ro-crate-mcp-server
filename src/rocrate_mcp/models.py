@@ -33,8 +33,12 @@ class IndexEntry(Base):
     validation_status = Column(Text)
     embeddings = Column(JSON)
     
+    # Keep uniqueness on checksum for integrity, and add a locator-based
+    # uniqueness constraint so a given backend+locator maps to a single entry.
+    # crate_id is derived as "{storage_backend_id}:{resource_locator}" by the indexer.
     __table_args__ = (
         UniqueConstraint("checksum_metadata_json", name="uq_entries_checksum"),
+        UniqueConstraint("storage_backend_id", "resource_locator", name="uq_entries_backend_locator"),
     )   
 
     def to_dict(self) -> dict[str, Any]:

@@ -8,12 +8,13 @@ class Settings(BaseSettings):
 
     # Storeage backend settings
     storage_backend: str = "sqlite+fts"  # 'sqlite+fts' | 'rdflib'
+    storage_index_min_update_interval_seconds:int = 3600
     # RDF store settings
     rdf_sqlite_url: str | None = "sqlite:///data/rdflib_store.db"
     
     # Explicit backend selector: 'filesystem' | 'azure' | 'none'
-    backend: str = "filesystem"
-    default_backend_id: str = "azure_default"
+    backend: str = "none"
+    backend_id: str = "mybackend"  # used to build stable crate IDs
 
     # Azure connection via connection string
     azure_connection_string: str | None = None

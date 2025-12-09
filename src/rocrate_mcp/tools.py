@@ -1,11 +1,14 @@
 import asyncio
+import datetime
 import json
+import logging
 from typing import Any
-
+import humanize
 from mcp.server.fastmcp import Context
 
 from rocrate_mcp.roc_mcp import mcp
-from rocrate_mcp.models import SearchFilter
+
+logger = logging.getLogger(__name__)
 
 
 @mcp.tool()
@@ -41,17 +44,22 @@ async def list_all_indexed_crates(
     }
     return {"count": len(page), "crate_ids": page, "meta": meta}
 
+
 @mcp.tool()
-async def semantic_search(query:str)-> dict[str,Any]:
+async def semantic_search(query: str, limit=10, offset=0) -> dict[str, Any]:
     """Perform a semantic search over indexed crates using the given query string."""
-    results = await mcp.state.store.semantic_search(
+    return await mcp.state.store.semantic_search(
         query=query,
         mode="semantic",
-        limit=10,
-        offset=0,
+        limit=limit,
+        offset=offset,
     )
-    return dict(results=results)
+    
 
+@mcp.tool()
+async def keyword_search(query:str, limit:int=10, offset:int=0)->dict[str,Any]:
+    """Perform a keyword search over indexed crates using a simplyfied lucence search syntax."""
+    return await mcp.state.store.search(query,limit=limit,offset=offset, mode="keyword")
 
 @mcp.tool()
 async def get_crate_metadata(crate_id: str) -> dict[str, Any]:
@@ -127,3 +135,75 @@ async def storage_list_resources(
         "total_seen": total_seen,
     }
     return {"count": len(items), "items": items, "meta": meta}
+
+
+@mcp.tool()
+async def list_searchable_fields(
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Return searchable fields from the configured store (entry columns and materialized entity properties)."""
+    store = mcp.state.store
+    if store is None:
+        return {"entries": [], "entities": {}}
+    try:
+        fields = await store.list_searchable_fields()
+        return {"success": True, "fields": fields}
+    except Exception:
+        logger.exception("list_searchable_fields failed")
+        return {"success": False, "fields": {}}
+
+
+@mcp.tool()
+async def sync_index_with_storage(
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Trigger a synchronization of the index with the storage backend.
+
+    This will scan the storage backend for new or removed crates and update
+    the index accordingly. This operation may take some time depending on
+    the number of resources in storage.
+    """
+    indexer = mcp.state.indexer
+    # only update max every hour
+    try:
+        store_last = getattr(mcp.state.store, "last_updated_at", None)
+        if store_last is not None:
+            # compute delta in seconds correctly
+            delta = datetime.datetime.now(datetime.UTC) - store_last
+            if delta.total_seconds() < mcp.state.settings.storage_index_min_update_interval_seconds:
+                logger.info(
+                    "[tools] sync_index_with_storage skipped; last update %s seconds ago",
+                    delta.total_seconds(),
+                )
+                delta_time = humanize.naturaldelta(
+                    datetime.timedelta(seconds=mcp.state.settings.storage_index_min_update_interval_seconds)
+                )
+                return {
+                    "status": "skipped",
+                    "message": f"Index was updated less than an {delta_time} ago.",
+                }
+    except Exception:
+        # If anything goes wrong computing the delta, fall back to running the sync
+        logger.debug("failed to check last_updated_at for store", exc_info=True)
+
+    if indexer is None:
+        return {"status": "error", "message": "Indexer not configured"}
+
+    total_before = await mcp.state.store.count()
+    await indexer.build_index(roc_type_or_fields_to_index=mcp.state.settings.get_fields_to_index())
+
+    # Ensure store.last_updated_at reflects the indexer/store update time so future calls can be skipped
+    try:
+        if hasattr(indexer, "last_updated_at") and indexer.last_updated_at is not None:
+            mcp.state.store.last_updated_at = indexer.last_updated_at
+        else:
+            mcp.state.store.last_updated_at = datetime.datetime.now(datetime.UTC)
+    except Exception:
+        logger.debug("failed to set store.last_updated_at after indexing", exc_info=True)
+
+    total_after = await mcp.state.store.count()
+    return {
+        "status": "success",
+        "total_indexed_before": total_before,
+        "total_indexed_after": total_after,
+    }

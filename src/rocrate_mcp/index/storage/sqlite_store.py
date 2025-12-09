@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime, timezone
@@ -17,18 +18,17 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from rocrate_mcp.index.embeddings import get_embeddings
-
-from ...config import Settings
-from ...models import (
+from rocrate_mcp.config import Settings
+from rocrate_mcp.index.search.embeddings import get_embeddings
+from rocrate_mcp.index.search.query_parser import FieldNode, PhraseNode, TermNode, parse_query
+from rocrate_mcp.models import (
     Base as ORMBase,
 )
-from ...models import (
+from rocrate_mcp.models import (
     EntityGlobal,
     EntityInCrate,
     EntityProperty,
     IndexEntry,
-    SearchFilter,
 )
 
 settings = Settings()
@@ -97,6 +97,7 @@ class SqliteFTSIndexStore:
         self._lock = None  # async code should not use thread locks
         self._fts_available = True
         self._materialize_entities_enabled = materialize_entities
+        self.last_updated_at: datetime | None = None
 
         # async engine and sessionmaker
         self._engine: AsyncEngine = create_async_engine(
@@ -129,9 +130,11 @@ class SqliteFTSIndexStore:
 
             # FTS table
             try:
+                # Create a normal FTS5 table (no external content= '') so we can
+                # insert combined_text rows directly and avoid contentless behavior
                 await conn.exec_driver_sql(
                     "CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts "
-                    "USING fts5( crate_id UNINDEXED, combined_text, content='' );"
+                    "USING fts5(crate_id UNINDEXED, combined_text);"
                 )
             except Exception:
                 logger.info("FTS5 not available - falling back to non-FTS search")
@@ -162,18 +165,36 @@ class SqliteFTSIndexStore:
         return None
 
     def _make_combined_text_from_json(self, obj: Any) -> str:
-        parts: list[str] = []
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                parts.append(str(k))
-                if isinstance(v, (list, tuple)):
-                    for item in v:
-                        parts.append(str(item))
-                else:
-                    parts.append(str(v))
-        else:
-            parts.append(str(obj))
-        return " ".join(parts)
+        """Flatten nested JSON-like structures into a space-separated token string.
+
+        This produces plain-word tokens instead of embedding raw JSON strings which
+        improves FTS indexing and matching for materialized properties.
+        """
+        tokens: list[str] = []
+
+        def _collect(o: Any) -> None:
+            if o is None:
+                return
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    # include the key name as a token and recurse on the value
+                    try:
+                        tokens.append(str(k))
+                    except Exception:
+                        pass
+                    _collect(v)
+            elif isinstance(o, (list, tuple)):
+                for item in o:
+                    _collect(item)
+            else:
+                try:
+                    tokens.append(str(o))
+                except Exception:
+                    pass
+
+        _collect(obj)
+        # filter out empty tokens and join with spaces
+        return " ".join(t for t in tokens if t)
 
     def _make_combined_text(self, entry: IndexEntry) -> str:
         parts: list[str] = []
@@ -218,22 +239,35 @@ class SqliteFTSIndexStore:
         mapping: dict[str, Any],
         crate_id: str,
     ) -> IndexEntry:
-        """Upsert a single entry in an existing session, using checksum first, then crate_id."""
+        """Upsert a single entry in an existing session, preferring lookup by
+        storage_backend_id + resource_locator, then checksum, then crate_id."""
         checksum = mapping.get("checksum_metadata_json")
         obj: IndexEntry | None = None
 
-        # 1) Try to find by checksum if available
-        if checksum:
+        # 1) Try to find by storage_backend_id + resource_locator if available
+        sbid = mapping.get("storage_backend_id")
+        locator = mapping.get("resource_locator")
+        if sbid and locator:
+            res = await session.execute(
+                select(IndexEntry).where(
+                    IndexEntry.storage_backend_id == sbid,
+                    IndexEntry.resource_locator == locator,
+                )
+            )
+            obj = res.scalars().first()
+
+        # 2) Try to find by checksum if available
+        if obj is None and checksum:
             res = await session.execute(
                 select(IndexEntry).where(IndexEntry.checksum_metadata_json == checksum)
             )
             obj = res.scalars().first()
 
-        # 2) If not found, fall back to primary key (crate_id)
+        # 3) If not found, fall back to primary key (crate_id)
         if obj is None:
             obj = await session.get(IndexEntry, crate_id)
 
-        # 3) Insert or update
+        # Insert or update
         if obj is None:
             obj = IndexEntry(**mapping)
             session.add(obj)
@@ -242,6 +276,68 @@ class SqliteFTSIndexStore:
                 setattr(obj, k, v)
 
         return obj
+
+    async def find_by_locator(
+        self, storage_backend_id: str, resource_locator: str
+    ) -> IndexEntry | None:
+        """Return IndexEntry for the given backend_id + locator, or None if not found."""
+        async with self._Session() as session:
+            res = await session.execute(
+                select(IndexEntry).where(
+                    IndexEntry.storage_backend_id == storage_backend_id,
+                    IndexEntry.resource_locator == resource_locator,
+                )
+            )
+            orm = res.scalars().first()
+            if orm is None:
+                return None
+            orm.name = orm.name or ""
+            orm.description = orm.description or ""
+            orm.date_published = orm.date_published or None
+            orm.license = orm.license or ""
+            orm.top_level_metadata = orm.top_level_metadata or {}
+            orm.extracted_fields = orm.extracted_fields or {}
+            orm.embeddings = orm.embeddings or []
+            return orm
+
+    async def delete_by_locator(self, storage_backend_id: str, resource_locator: str) -> None:
+        """Hard delete index entry and associated FTS and materialized entities by locator."""
+        async with self._engine.begin() as conn:
+            # Find crate_id
+            res = await conn.execute(
+                text(
+                    "SELECT crate_id FROM entries WHERE storage_backend_id = :sbid AND resource_locator = :rl"
+                ),
+                {"sbid": storage_backend_id, "rl": resource_locator},
+            )
+            row = res.fetchone()
+            if not row:
+                return
+            crate_id = row[0]
+
+            # Remove entity_in_crate rows referencing this crate
+            await conn.execute(
+                text("DELETE FROM entity_in_crate WHERE crate_id = :cid"), {"cid": crate_id}
+            )
+            # Remove orphaned entity_properties
+            await conn.execute(
+                text(
+                    "DELETE FROM entity_properties WHERE entity_global_id NOT IN (SELECT entity_global_id FROM entity_in_crate)"
+                )
+            )
+            # Remove orphaned entities_global
+            await conn.execute(
+                text(
+                    "DELETE FROM entities_global WHERE id NOT IN (SELECT entity_global_id FROM entity_in_crate)"
+                )
+            )
+            # Remove FTS entry
+            if self._fts_available:
+                await conn.execute(
+                    text("DELETE FROM entries_fts WHERE crate_id = :cid"), {"cid": crate_id}
+                )
+            # Finally remove the entry row
+            await conn.execute(text("DELETE FROM entries WHERE crate_id = :cid"), {"cid": crate_id})
 
     async def _update_fts_for_entries(
         self,
@@ -253,14 +349,20 @@ class SqliteFTSIndexStore:
 
         async with self._engine.begin() as conn:
             for crate_id, combined_text in items:
-                await conn.execute(
-                    text("DELETE FROM entries_fts WHERE crate_id = :cid"),
-                    {"cid": crate_id},
-                )
-                await conn.execute(
-                    text("INSERT INTO entries_fts (crate_id, combined_text) VALUES (:cid, :ct)"),
-                    {"cid": crate_id, "ct": combined_text},
-                )
+                # ensure combined_text is a plain string for sqlite binding
+                ct = combined_text if isinstance(combined_text, str) else json.dumps(combined_text)
+                try:
+                    await conn.execute(
+                        text("DELETE FROM entries_fts WHERE crate_id = :cid"),
+                        {"cid": crate_id},
+                    )
+                    # Use explicit casting to TEXT to avoid sqlite parameter binding issues
+                    await conn.execute(
+                        text("INSERT INTO entries_fts (crate_id, combined_text) VALUES (:cid, CAST(:ct AS TEXT))"),
+                        {"cid": crate_id, "ct": ct},
+                    )
+                except Exception:
+                    logger.exception("failed to update entries_fts for %s", crate_id)
 
     async def _materialize_entries(
         self,
@@ -313,6 +415,9 @@ class SqliteFTSIndexStore:
         # Entity materialization
         await self._materialize_entries([entry])
 
+        # Record last update time so external callers can observe when the store changed
+        self.last_updated_at = datetime.now(UTC)
+
     async def bulk_insert(self, entries: Iterable[IndexEntry]) -> None:
         """Upsert multiple entries, deduplicating by checksum if present."""
         entries_list = list(entries)
@@ -338,6 +443,7 @@ class SqliteFTSIndexStore:
 
         # Materialize all entries
         await self._materialize_entries(entries_list)
+        self.last_updated_at = datetime.now(UTC)
 
     async def get(self, crate_id: str) -> IndexEntry | None:
         async with self._Session() as session:
@@ -384,79 +490,175 @@ class SqliteFTSIndexStore:
                 results.append(orm)
 
         if return_total:
-            async with self._engine.connect() as conn:
-                total = (await conn.execute(text("SELECT COUNT(*) FROM entries"))).scalar() or 0
+            total = await self.count()
             return results, int(total)
 
         return results
 
+    async def count(self) -> int:
+        async with self._engine.connect() as conn:
+            total = (await conn.execute(text("SELECT COUNT(*) FROM entries"))).scalar() or 0
+            return int(total)
+
     # ----------------------
     # Search helpers
     # ----------------------
-    async def search(self, filter: SearchFilter, mode: str = "keyword") -> list[IndexEntry]:
-        q = (filter.q or "").strip()
-        candidate_ids: list[str] = []
+    async def _candidate_ids_for_term(self, term: str, is_phrase: bool = False, fuzzy: bool = False) -> list[str]:
+        # Use FTS match for single token/phrase; fallback to simple LIKE scan if FTS
+        # returns no usable results (covers cases where entries_fts combined_text is
+        # empty or FTS not available).
+        if is_phrase:
+            fts_query = f'"{term}"'
+        else:
+            # for fuzzy terms, try a prefix wildcard match in FTS (term*) which
+            # gives broader results; otherwise use the exact token
+            fts_query = f"{term}*" if fuzzy else term
 
-        if q and mode == "keyword" and self._fts_available:
+        if self._fts_available:
             async with self._engine.connect() as conn:
                 cur = await conn.execute(
-                    text("SELECT crate_id FROM entries_fts WHERE entries_fts MATCH :q"), {"q": q}
+                    text("SELECT crate_id FROM entries_fts WHERE entries_fts MATCH :q"), {"q": fts_query}
                 )
-                candidate_ids = [r[0] for r in cur.fetchall()]
+                rows = cur.fetchall()
+                ids = [r[0] for r in rows if r and r[0] is not None]
+                if ids:
+                    return ids
+                # if FTS returned nothing useful, fall through to LIKE fallback
+        # Fallback: perform a case-insensitive LIKE search across name, description,
+        # and serialized extracted_fields. Use the raw term (no surrounding quotes).
+        like_val = term
+        async with self._Session() as session:
+            q = select(IndexEntry.crate_id).where(
+                text(
+                    f"LOWER(name || ' ' || description || ' ' || json_extract(extracted_fields, '$')) LIKE '%' || LOWER(:val) || '%'"
+                )
+            )
+            res = await session.execute(q, {"val": like_val})
+            return [r[0] for r in res.fetchall()]
+
+    async def _field_variants(self, prop_path: str) -> list[str]:
+        """Return plausible variants for a property name (e.g. fullName -> full_name).
+        """
+        def to_snake(s: str) -> str:
+            import re
+
+            s1 = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', s)
+            s2 = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s1)
+            return s2.replace('-', '_').lower()
+
+        def to_camel(s: str) -> str:
+            parts = s.split('_')
+            if not parts:
+                return s
+            return parts[0] + ''.join(p.capitalize() for p in parts[1:])
+
+        variants: list[str] = []
+        if prop_path not in variants:
+            variants.append(prop_path)
+        snake = to_snake(prop_path)
+        if snake not in variants:
+            variants.append(snake)
+        camel = to_camel(prop_path)
+        if camel not in variants:
+            variants.append(camel)
+        lower = prop_path.lower()
+        if lower not in variants:
+            variants.append(lower)
+        return variants
+
+    async def _candidate_ids_for_field(
+        self, field: str, value: str, exact: bool = False, fuzzy: bool = False
+    ) -> list[str]:
+        # field may be an entry field like 'description' or a materialized entity path like 'Person.familyName'
+        # fuzzy=True indicates the parser requested fuzzy matching (tilde). We prefer FTS lookups
+        # when available; otherwise fall back to LIKE queries.
+        if "." in field:
+            # entity field: Type.prop
+            type_name, prop_path = field.split(".", 1)
+            # try variants of prop_path
+            for variant in await self._field_variants(prop_path):
+                # if fuzzy, use LIKE-based search for entity properties
+                if fuzzy:
+                    ids = await self.find_crates_by_entity_property(type_name, variant, value, exact=False)
+                else:
+                    ids = await self.find_crates_by_entity_property(type_name, variant, value, exact=exact)
+                if ids:
+                    return ids
+            return []
         else:
-            async with self._Session() as session:
-                res = await session.execute(select(IndexEntry.crate_id))
-                candidate_ids = [r[0] for r in res.fetchall()]
+            # entry-level field
+            if fuzzy:
+                return await self.find_crates_by_entry_field(field, value, exact=False)
+            return await self.find_crates_by_entry_field(field, value, exact=exact)
 
-        results: list[IndexEntry] = []
-        for cid in candidate_ids:
-            entry = await self.get(cid)
-            if entry is None:
-                continue
-            match = True
-            if filter.field_filters:
-                for k, v in filter.field_filters.items():
-                    if str(entry.extracted_fields.get(k, "")).lower().find(v.lower()) == -1:
-                        match = False
-                        break
-            if not match:
-                continue
-            if mode == "keyword" or not q:
-                if q and not self._fts_available:
-                    parts: list[str] = []
-                    if entry.name:
-                        if isinstance(entry.name, (list, tuple)):
-                            parts.append(" ".join(str(x) for x in entry.name))
-                        else:
-                            parts.append(str(entry.name))
-                    if entry.description:
-                        if isinstance(entry.description, (list, tuple)):
-                            parts.append(" ".join(str(x) for x in entry.description))
-                        else:
-                            parts.append(str(entry.description))
-                    parts.append(" ".join(str(x) for x in (entry.extracted_fields or {}).values()))
-                    hay = " ".join([p for p in parts if p]).lower()
-                    if q.lower() not in hay:
-                        continue
-                results.append(entry)
-            elif mode == "semantic":
-                results.append(entry)
-            else:
-                results.append(entry)
+    async def list_searchable_fields(self) -> dict:
+        """Return available searchable fields: entry columns and materialized entity prop paths.
 
-        start = filter.offset
-        end = start + filter.limit
+        Returns: {"entries": [..], "entities": {type_name: [prop_paths...]}}
+        """
+        result: dict = {"entries": ["crate_id", "name", "description", "license", "resource_locator"], "entities": {}}
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(text(
+                "SELECT eg.type_name, ep.prop_path FROM entities_global eg JOIN entity_properties ep ON eg.id = ep.entity_global_id"
+            ))).fetchall()
+            for type_name, prop_path in rows:
+                if type_name not in result["entities"]:
+                    result["entities"][type_name] = []
+                if prop_path not in result["entities"][type_name]:
+                    result["entities"][type_name].append(prop_path)
+        return result
 
-        return [await self.get(crate_id) for crate_id in candidate_ids[start:end]]
+    async def search(
+        self,
+        query: None | str = None,
+        limit: int = 10,
+        offset: int = 0,
+        mode: str = "keyword",
+    ) -> list[IndexEntry]:
+        """Search index using a canonical query string with Lucene-subset parsing.
+
+        Supports: field:value, field:"phrase", quoted phrases, and bare terms.
+        Multiple tokens are combined with AND semantics.
+        """
+        q = (query or "").strip()
+
+        nodes = parse_query(q) if q else []
+
+        # For parsed queries, compute candidate id sets per token and intersect
+        candidate_sets: list[set[str]] = []
+        for n in nodes:
+            if isinstance(n, TermNode):
+                ids = await self._candidate_ids_for_term(n.term, is_phrase=False, fuzzy=getattr(n, 'fuzzy', False))
+                candidate_sets.append(set(ids))
+            elif isinstance(n, PhraseNode):
+                ids = await self._candidate_ids_for_term(n.phrase, is_phrase=True, fuzzy=False)
+                candidate_sets.append(set(ids))
+            elif isinstance(n, FieldNode):
+                if isinstance(n.child, TermNode):
+                    ids = await self._candidate_ids_for_field(n.field, n.child.term, exact=False, fuzzy=getattr(n.child, 'fuzzy', False))
+                    candidate_sets.append(set(ids))
+                elif isinstance(n.child, PhraseNode):
+                    ids = await self._candidate_ids_for_field(n.field, n.child.phrase, exact=False, fuzzy=False)
+                    candidate_sets.append(set(ids))
+
+        if not candidate_sets:
+            # nothing matched
+            return []
+
+        # intersection
+        common = set.intersection(*candidate_sets)
+       
+
+        return {"success":True, "hits":[{"crate_id":cid} for cid in common]}
 
     async def semantic_search(
         self, query: str, limit: int = 10, offset: int = 0, mode="semantic"
-    ) -> list[str]:
+    ) -> list[dict]:
         """Perform a semantic search over indexed crates using embeddings."""
         if mode == "semantic" and query and settings.embeddings_provider != "none":
             from sentence_transformers.util import semantic_search, dot_score
 
-            query_embeddings = await get_embeddings(query, prompt_name="query")
+            query_embeddings = np.array(await get_embeddings(query, prompt_name="query"))
             # 2) Load all entries that have embeddings, plus extracted_fields for filtering
             async with self._Session() as session:
                 res = await session.execute(
@@ -465,13 +667,39 @@ class SqliteFTSIndexStore:
                     )
                 )
                 rows = res.fetchall()
-                print(rows)
-            print(rows)
-            corpus_embeddings = [emb for _, emb in rows][0]
-            crate_ids_per_embedding = [cid for cid, emb in rows for _ in emb]
+                logger.debug("semantic_search: fetched rows for embeddings: %s", rows)
+            logger.debug("semantic_search: rows outer: %s", rows)
+
+            flat_embeddings: list[np.ndarray] = []
+            crate_ids_per_embedding: list[str] = []
+
+            for crate_id, emb in rows:
+                # Convert to array so we can reason about ndim
+                emb_arr = np.asarray(emb)
+
+                if emb_arr.ndim == 1:
+                    # Single embedding (1024,)
+                    flat_embeddings.append(emb_arr)
+                    crate_ids_per_embedding.append(crate_id)
+                elif emb_arr.ndim == 2:
+                    # Multiple embeddings (k, 1024)
+                    flat_embeddings.extend(emb_arr)  # appends each row
+                    crate_ids_per_embedding.extend([crate_id] * emb_arr.shape[0])
+                else:
+                    [dict(success=False, error_msg="Unexpeced embedding shape in index.")]
+
+            if not flat_embeddings:
+                return [dict(success=False, error_msg="No embeddings available in index.")]
+
+            corpus_embeddings = np.stack(flat_embeddings, axis=0)  # (total_embeddings, 1024)
+
+            # Perform semantic search with increased limit to account for multiple embeddings per crate
+            factored_limit = query_embeddings.shape[0] * math.ceil(
+                corpus_embeddings.shape[0] / len(set(crate_ids_per_embedding)) * limit
+            )
 
             hits_per_query = semantic_search(
-                np.array(query_embeddings), np.array(corpus_embeddings), score_function=dot_score
+                query_embeddings, corpus_embeddings, score_function=dot_score, top_k=factored_limit
             )
             crate_max_scores: dict[str, float] = {}
             for q_hits in hits_per_query:
@@ -486,10 +714,12 @@ class SqliteFTSIndexStore:
             ranked_crates = [
                 cid
                 for cid, _ in sorted(crate_max_scores.items(), key=lambda kv: kv[1], reverse=True)
-            ]
-            return ranked_crates
+            ][offset : offset + limit]
+            return {"success": True, "limit": limit,"offset":offset, "hits":[{"crate_id":cid,"score":crate_max_scores[cid]} for cid in ranked_crates]}
+        elif mode == "semantic" and settings.embeddings_provider != "none":
+            return [dict(success=False, error_msg="No query string provided for semantic search.")]
         else:
-            return ["Semantic search not enabled"]
+            return [dict(success=False, error_msg="Semantic search not available")]
 
     # ----------------------
     # Convenience query helpers (async)

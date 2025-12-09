@@ -57,6 +57,7 @@ class HTTPStorageBackend(StorageBackend):
         default_suffixes: list[str] | None = None,
         timeout: float | None = 10,
         session: requests.Session | None = None,
+        backend_id: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/") + "/"
         rp = root_prefix or ""
@@ -74,6 +75,9 @@ class HTTPStorageBackend(StorageBackend):
 
         self.timeout = timeout
         self.session = session or requests.Session()
+
+        # Optional backend identifier; indexer will read this to compute stable crate IDs
+        self.backend_id: str | None = backend_id
 
     def _root_url(self) -> str:
         return urljoin(self.base_url, self.root_prefix or "")

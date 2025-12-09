@@ -33,8 +33,9 @@ class FilesystemStorageBackend(StorageBackend):
         self,
         root_dir: str | Path,
         root_prefix: None | str | Path = None,
-        default_suffixes: list[str] | None = None,
-    ):
+         default_suffixes: list[str] | None = None,
+         backend_id: str | None = None,
+     ):
         # store resolved Path for the root directory
         self.root_dir: Path = Path(root_dir).resolve()
         # normalize root_prefix to a string without leading separators
@@ -52,6 +53,11 @@ class FilesystemStorageBackend(StorageBackend):
             ]
 
         self.root_dir.mkdir(parents=True, exist_ok=True)
+
+        # Optional backend identifier; may be set by caller or left None for
+        # backward compatibility. The indexer will read this attribute to
+        # construct stable crate IDs in the form "{backend_id}:{locator}".
+        self.backend_id: str | None = backend_id
 
     def _resolve(self, relative: str | Path) -> Path:
         """Resolve a relative locator (may include nested subdirs) to an absolute Path

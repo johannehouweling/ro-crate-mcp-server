@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from rocrate_mcp.rocrate_storage.filesystem import FilesystemStorageBackend
 
 # ----- Initialization: settings, store, backend, indexer --------------------
 
+logger = logging.getLogger(__name__)
 settings = Settings()
 
 # Resolve store path and create sqlite-backed index store
@@ -30,7 +32,11 @@ if (settings.backend or "").lower() == "azure":
         raise RuntimeError(
             "ROC_MCP_BACKEND=azure requires ROC_MCP_AZURE_CONNECTION_STRING and ROC_MCP_AZURE_CONTAINER"
         )
-    backend = AzureBlobStorageBackend(settings.azure_connection_string, settings.azure_container)
+    backend = AzureBlobStorageBackend(
+        settings.azure_connection_string,
+        settings.azure_container,
+        backend_id=settings.backend_id,
+    )
 elif (settings.backend or "").lower() == "filesystem":
     if not settings.filesystem_root:
         raise RuntimeError("ROC_MCP_BACKEND=filesystem requires ROC_MCP_FILESYSTEM_ROOT to be set")
@@ -54,25 +60,25 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[None]:
     """Server-level lifespan. Runs once when the MCP server starts."""
 
     # 1) Ensure DB initialized
-    print("Initializing SQLite/FTS store...")
+    logger.info("Initializing SQLite/FTS store...")
     try:
         await store.init_db()
-        print("SQLite/FTS store initialized.")
-    except Exception as e:
-        print("Store init failed:", e)
+        logger.info("SQLite/FTS store initialized.")
+    except Exception:
+        logger.exception("Store init failed")
 
     # 2) Optional eager indexing
     if settings.index_mode == "eager" and backend is not None:
-        print("Starting eager index build (lifespan)...")
+        logger.info("Starting eager index build (lifespan)...")
         try:
             await indexer.build_index(
                 roc_type_or_fields_to_index=settings.get_fields_to_index()
             )
-            print("Eager index build finished (lifespan)")
-        except Exception as e:
-            print("Eager index build failed (lifespan):", e)
+            logger.info("Eager index build finished (lifespan)")
+        except Exception:
+            logger.exception("Eager index build failed (lifespan)")
     else:
-        print(
+        logger.info(
             "Skipping eager index build (lifespan). "
             f"index_mode={settings.index_mode!r}, backend={backend!r}"
         )

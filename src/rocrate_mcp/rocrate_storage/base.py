@@ -15,7 +15,18 @@ class ResourceInfo:
 
 @runtime_checkable
 class StorageBackend(Protocol):
-    """Protocol for pluggable storage backends."""
+    """Protocol for pluggable storage backends.
+
+    Implementations MUST expose a backend_id attribute which identifies the
+    configured backend instance. The indexer will use this backend_id together
+    with the resource locator to form a stable crate_id in the format
+    "{backend_id}:{resource_locator}".
+
+    The attribute may be None for backward compatibility, but in production a
+    non-empty backend_id is recommended.
+    """
+
+    backend_id: str | None
 
     def list_resources(self, prefix: str|None = None, suffixes: list[str]|None = None) -> Iterator[ResourceInfo]:
         """List resources under the optional prefix, optionally filtering by file suffixes.

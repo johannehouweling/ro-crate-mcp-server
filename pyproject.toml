@@ -17,6 +17,7 @@ dependencies = [
     "rdflib-sqlalchemy>=0.5.3",
     "sqlalchemy>=2.0.44",
     "aiosqlite>=0.21.0",
+    "humanize>=4.14.0",
 ]
 
 [build-system]
@@ -47,6 +48,7 @@ dev = [
     "mypy", # type checks
     "ipykernel>=7.1.0",
     "ipywidgets>=8.1.8",
+    "factory-boy>=3.3.3",
 ]
 embeddings = [
     "hf-xet>=1.2.0",

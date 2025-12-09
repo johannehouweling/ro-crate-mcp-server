@@ -3,16 +3,20 @@ from __future__ import annotations
 import asyncio
 import datetime
 import hashlib
-import uuid
+import logging
 from collections.abc import Iterable
 from typing import Any
 
 from rocrate.rocrate import ROCrate
 
+from ..config import Settings
 from ..models import IndexEntry
 from ..rocrate_storage.base import ResourceInfo, StorageBackend
-from .embeddings import get_embeddings
+from .search.embeddings import get_embeddings
 from .storage.store import IndexStore
+
+logger = logging.getLogger(__name__)
+
 
 # assuming these types exist in your codebase
 # from your_module import StorageBackend, IndexStore, ResourceInfo, IndexEntry
@@ -191,13 +195,36 @@ class Indexer:
 
         async def worker(res: ResourceInfo) -> None:
             async with sem:
+                # Determine backend_id to build stable crate_id. To keep crate_id
+                # length and characters safe, hash the locator portion using sha256.
+                backend_id = getattr(self.backend, "backend_id", None) or Settings().backend_id
+                locator_hash = hashlib.sha256(str(res.locator).encode("utf-8")).hexdigest()
+                crate_id = f"{backend_id}:{locator_hash}"
+
+                # cheap pre-check: if entry exists and size/mtime match, skip extraction
+                try:
+                    existing = await self.store.find_by_locator(backend_id, res.locator)
+                except Exception:
+                    existing = None
+
+                if existing is not None:
+                    # compare sizes and last_modified
+                    size_matches = (existing.resource_size == res.size) or (
+                        existing.resource_size is None and res.size is None
+                    )
+                    lm_matches = (existing.resource_last_modified == res.last_modified) or (
+                        existing.resource_last_modified is None and res.last_modified is None
+                    )
+                    if size_matches and lm_matches:
+                        logger.info("[indexer] skipping unchanged resource: %s", res.locator)
+                        return None
 
                 def read_and_parse() -> IndexEntry | None:
                     roc_json_paths = self.backend.get_extracted_file_paths(res.locator)
                     if roc_json_paths is None:
                         return None
                     # debug
-                    print("[indexer] extracted paths:", roc_json_paths)
+                    logger.debug("[indexer] extracted paths: %s", roc_json_paths)
                     # If the extractor didn't find a metadata file, skip
 
                     # roc_meta_path is the temp folder containing ro-crate-metadata.json
@@ -207,7 +234,40 @@ class Indexer:
                     try:
                         roc = ROCrate(roc_meta_path.parent)
                     except Exception:
-                        return None
+                        # Fallback: attempt to parse the metadata JSON directly and
+                        # create a minimal ROC-like object that supports the
+                        # attributes and methods used by extract_fields.
+                        try:
+                            import json
+
+                            data = json.loads(roc_meta_path.read_bytes())
+
+                            class SimpleMetadata:
+                                def __init__(self, obj: dict):
+                                    self._obj = obj
+
+                                def as_jsonld(self):
+                                    return self._obj
+
+                            class SimpleRoc:
+                                def __init__(self, obj: dict):
+                                    self._obj = obj
+                                    # normalize to lists where appropriate
+                                    self.name = obj.get("name") if isinstance(obj.get("name"), list) else ([obj.get("name")] if obj.get("name") else [])
+                                    self.description = obj.get("description") if isinstance(obj.get("description"), list) else ([obj.get("description")] if obj.get("description") else [])
+                                    self.root_dataset = obj
+                                    self.metadata = SimpleMetadata(obj)
+
+                                def get_by_type(self, type_name: str):
+                                    # Expect top-level key with type_name mapping to a list of entities
+                                    val = self._obj.get(type_name)
+                                    if val is None:
+                                        return None
+                                    return val
+
+                            roc = SimpleRoc(data)
+                        except Exception:
+                            return None
 
                     # Parse metadata JSON-LD file directly (preferred for basic fields)
                     extracted_fields = extract_fields(roc, roc_type_or_fields_to_index)
@@ -216,11 +276,19 @@ class Indexer:
 
                     # Construct ORM IndexEntry mapped object
                     entry = IndexEntry(
-                        crate_id=uuid.uuid4().hex,
+                        crate_id=crate_id,
+                        storage_backend_id=backend_id,
                         name=" ".join(roc.name) if getattr(roc, "name", None) else "",
-                        description=" ".join(roc.description) if roc is not None else "",
+                        # Prefer explicit root_dataset description if present; fall back to roc.description
+                        description=(" ".join(roc.root_dataset.get("description", [])) if roc is not None and roc.root_dataset.get("description", []) else (" ".join(roc.description) if getattr(roc, "description", None) else "")),
                         license=" ".join(roc.root_dataset.get("license", [])),
-                        date_published=datetime.datetime.fromisoformat(roc.root_dataset.get("datePublished", [])[0]),
+                        date_published=(
+                            datetime.datetime.fromisoformat(
+                                roc.root_dataset.get("datePublished", [])[0]
+                            )
+                            if roc.root_dataset.get("datePublished", [])
+                            else None
+                        ),
                         resource_locator=res.locator,
                         resource_size=res.size,
                         resource_last_modified=res.last_modified,
@@ -230,7 +298,7 @@ class Indexer:
                         if getattr(roc, "metadata", None)
                         else {},
                         extracted_fields=extracted_fields,
-                        embeddings=[[]], # will be filled later
+                        embeddings=[[]],  # will be filled later
                         indexed_at=datetime.datetime.now(datetime.UTC),
                     )
                     text_to_embed = f"{roc.name}\n{roc.description}"
@@ -239,20 +307,26 @@ class Indexer:
 
                     return entry, text_to_embed
 
-                print("[indexer] submitting read_and_parse to executor for", res.locator)
-                entry, text_to_embedd = await loop.run_in_executor(None, read_and_parse)
-                print("[indexer] read_and_parse returned:", entry)
+                logger.info("[indexer] submitting read_and_parse to executor for %s", res.locator)
+                result = await loop.run_in_executor(None, read_and_parse)
+                if result is None:
+                    entry = None
+                    text_to_embedd = None
+                else:
+                    entry, text_to_embedd = result
+
+                logger.debug("[indexer] read_and_parse returned: %s", entry)
                 if entry is not None:
                     if text_to_embedd:
                         entry.embeddings = await get_embeddings(text_to_embedd)
-                    print("[indexer] inserting entry:", getattr(entry, "crate_id", None))
+                    logger.info("[indexer] inserting entry: %s", getattr(entry, "crate_id", None))
                     try:
                         await self.store.insert(entry)
                     except Exception as e:
-                        print("[indexer] store.insert raised:", e)
+                        logger.exception("[indexer] store.insert raised")
                         raise
                 else:
-                    print("[indexer] no entry parsed for", res.locator)
+                    logger.debug("[indexer] no entry parsed for %s", res.locator)
 
         for res in self.backend.list_resources():
             tasks.append(asyncio.create_task(worker(res)))

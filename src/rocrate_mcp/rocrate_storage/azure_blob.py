@@ -10,15 +10,26 @@ from .base import ResourceInfo, StorageBackend
 
 
 class AzureBlobStorageBackend(StorageBackend):
-    def __init__(self, connection_string: str, container: str, root_prefix: str|None = None, default_suffixes: None|[list[str]] = None):
+    def __init__(
+        self,
+        connection_string: str,
+        container: str,
+        root_prefix: str | None = None,
+        default_suffixes: None | list[str] = None,
+        backend_id: str | None = None,
+    ):
         self.client = ContainerClient.from_connection_string(connection_string, container_name=container)
         self.root_prefix = root_prefix
         if default_suffixes is None:
-            self.default_suffixes: list[str]|None = ['.zip']
+            self.default_suffixes: list[str] | None = [".zip"]
         else:
-            self.default_suffixes = [(s if s.startswith('.') else f'.{s}') for s in default_suffixes]
+            self.default_suffixes = [(s if s.startswith(".") else f".{s}") for s in default_suffixes]
 
-    def list_resources(self, prefix: str|None = None, suffixes: list[str]|None = None) -> Iterator[ResourceInfo]:
+        # Optional unique identifier for this backend instance. The indexer
+        # will read this attribute to compute stable crate IDs.
+        self.backend_id: str | None = backend_id
+
+    def list_resources(self, prefix: str | None = None, suffixes: list[str] | None = None) -> Iterator[ResourceInfo]:
         """
         List blobs under the optional prefix, optionally filtering by suffixes.
 
